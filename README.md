@@ -23,8 +23,8 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/crypto-trading-bot.git
-cd crypto-trading-bot
+git clone https://github.com/yaelahqi/future-simulasi.git
+cd future-simulasi
 ```
 
 ### 2. Install Dependencies
@@ -191,6 +191,179 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 - Past performance does not guarantee future results
 - Always do your own research
 
+## 🚀 Deployment Guide (24/7 Running)
+
+### Option 1: PM2 (Recommended)
+
+**PM2** is a production process manager that keeps your bot running 24/7 with auto-restart.
+
+#### Step 1: Install PM2
+
+```bash
+# Via npm (Node.js required)
+npm install -g pm2
+
+# Verify installation
+pm2 --version
+```
+
+#### Step 2: Start Bot with PM2
+
+```bash
+cd future-simulasi
+
+# Start bot
+pm2 start main.py --name crypto-bot --interpreter python3
+
+# Or with custom config
+pm2 start main.py --name crypto-bot --interpreter python3 -- --config production.env
+```
+
+#### Step 3: Save PM2 Configuration
+
+```bash
+# Save current process list
+pm2 save
+
+# Setup PM2 to start on system boot
+pm2 startup
+
+# Run the generated command (copy from output)
+sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u your_username --hp /home/your_username
+```
+
+#### Step 4: Monitor Bot
+
+```bash
+# Check status
+pm2 status
+
+# View real-time logs
+pm2 logs crypto-bot
+
+# Monitor CPU/Memory
+pm2 monit
+
+# Describe process details
+pm2 describe crypto-bot
+```
+
+#### Step 5: Common PM2 Commands
+
+```bash
+# Restart bot
+pm2 restart crypto-bot
+
+# Stop bot
+pm2 stop crypto-bot
+
+# Delete from PM2
+pm2 delete crypto-bot
+
+# Restart all processes
+pm2 restart all
+
+# View all logs
+pm2 logs
+
+# Flush logs
+pm2 flush
+```
+
+#### PM2 Ecosystem File (Optional)
+
+Create `ecosystem.config.js` for advanced configuration:
+
+```javascript
+module.exports = {
+  apps: [{
+    name: 'crypto-bot',
+    script: 'main.py',
+    interpreter: 'python3',
+    cwd: '/path/to/future-simulasi',
+    env: {
+      PYTHONUNBUFFERED: '1',
+    },
+    error_file: './logs/pm2-error.log',
+    out_file: './logs/pm2-out.log',
+    log_file: './logs/pm2-combined.log',
+    time: true,
+    autorestart: true,
+    max_memory_restart: '500M',
+    watch: false,
+  }]
+};
+```
+
+Start with ecosystem file:
+```bash
+pm2 start ecosystem.config.js
+```
+
+---
+
+### Option 2: Screen (Quick Test)
+
+```bash
+# Start screen session
+screen -S crypto-bot
+
+# Run bot
+python main.py
+
+# Detach (bot keeps running)
+Ctrl+A, then D
+
+# Reattach
+screen -r crypto-bot
+
+# Kill session
+screen -S crypto-bot -X quit
+```
+
+---
+
+### Option 3: Systemd (VPS/Server)
+
+Create service file:
+
+```bash
+sudo nano /etc/systemd/system/crypto-bot.service
+```
+
+Paste:
+```ini
+[Unit]
+Description=Crypto Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your_username
+WorkingDirectory=/path/to/future-simulasi
+ExecStart=/usr/bin/python3 /path/to/future-simulasi/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable & start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable crypto-bot
+sudo systemctl start crypto-bot
+sudo systemctl status crypto-bot
+```
+
+View logs:
+```bash
+sudo journalctl -u crypto-bot -f
+```
+
+---
+
 ## 🐛 Troubleshooting
 
 ### Bot not sending messages
@@ -202,11 +375,34 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 - Check internet connection
 - Verify exchange API is accessible
 - Adjust RSI thresholds in config
+- Increase `SCREENING_MIN_VOLUME` if no coins found
 
 ### Import errors
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt --force-reinstall
+```
+
+### PM2: Bot keeps restarting
+```bash
+# Check error logs
+pm2 logs crypto-bot --err
+
+# Check memory usage
+pm2 monit
+
+# Increase max memory in ecosystem.config.js
+```
+
+### PM2: Bot won't start
+```bash
+# Test manually first
+python main.py
+
+# Check Python path
+which python3
+
+# Update ecosystem.config.js with correct paths
 ```
 
 ## 📝 License
