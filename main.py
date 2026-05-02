@@ -25,7 +25,7 @@ class TradingBot:
         self.telegram = TelegramBot()
         self.running = True
         self.last_signal_time = {}
-        self.scan_interval = 300  # 5 minutes
+        self.scan_interval = 120  # 2 minutes (balanced - recommended)
         self.active_symbols = list(SYMBOLS) if not SCREENING_ENABLED else []
         self.trading_enabled = TRADING_ENABLED  # Can be toggled via Telegram
         self.last_processed_msg_id = 0

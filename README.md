@@ -250,6 +250,15 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 
 Bot now calculates **Take Profit** and **Stop Loss** dynamically based on market levels:
 
+## ⏱️ Position Check Interval
+
+Bot checks all open positions **every 2 minutes** against real market prices:
+
+- ✅ **TP/SL Detection** - Avg 1 min delay
+- ✅ **Trailing Stops** - Updated every 2 min
+- ✅ **60 API calls/hour** - Sustainable rate
+- ✅ **Balanced** - Fast enough, not spammy
+
 ## 🔄 Auto Re-Screening on Position Close
 
 When a position closes (TP/SL hit), bot automatically:
