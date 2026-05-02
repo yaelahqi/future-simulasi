@@ -30,6 +30,12 @@ class TradingBot:
         self.trading_enabled = TRADING_ENABLED  # Can be toggled via Telegram
         self.last_processed_msg_id = 0
         
+        # Re-screening on position close
+        self.last_screening_time = 0
+        self.screening_cooldown = 300  # 5 minutes between re-screenings
+        self.blacklisted_coins = {}  # {symbol: timestamp} - coins to avoid after SL
+        self.blacklist_duration = 1800  # 30 minutes blacklist after SL hit
+        
         # Load previous state if exists
         if self.trader:
             self.trader.load_state()
@@ -92,6 +98,7 @@ class TradingBot:
 • /close SYMBOL - Close specific position (e.g., /close SOL)
 • /closeall - Close all positions
 • /reset - Reset capital to initial
+• /screen - Manual screening trigger
 
 ⚙️ *Bot Info:*
 • /start - Start bot
@@ -204,6 +211,15 @@ _Tracking: {} coin(s)_
                     else:
                         self.telegram.send_message("❌ Paper trading not enabled")
                 
+                elif cmd == '/screen':
+                    if self.screener and SCREENING_ENABLED:
+                        self.telegram.send_message("🔍 Running manual screening...")
+                        top_picks = self.screener.get_top_picks(limit=10, min_score=1)
+                        self.send_screening_results(top_picks)
+                        self.last_screening_time = time.time()  # Update cooldown
+                    else:
+                        self.telegram.send_message("❌ Screening not enabled")
+                
         except Exception as e:
             print(f"Error handling commands: {e}")
     
@@ -293,12 +309,107 @@ Price: ${signal_data['price']:.4f}
         for position in closed:
             self.telegram.send_position_closed(position)
             print(f"✅ Closed position: {position['symbol']} | PnL: ${position['pnl']:.2f}")
+            
+            # Blacklist coin if SL hit (avoid re-entry)
+            if position.get('close_reason') == 'STOP_LOSS':
+                self.blacklist_coin(position['symbol'], 'SL_HIT')
+            
+            # Trigger re-screening if slot available
+            if self.screener and SCREENING_ENABLED:
+                self.trigger_screening(reason=f"{position['symbol']} {position['close_reason']}")
     
     def send_summary(self):
         """Send portfolio summary"""
         if self.trader:
             summary = self.trader.get_portfolio_summary()
             self.telegram.send_portfolio_summary(summary)
+    
+    def can_trigger_screening(self):
+        """Check if we can trigger re-screening (cooldown + slots available)"""
+        # Check if slots available
+        if len(self.trader.positions) >= self.trader.max_positions:
+            return False, "Max positions reached"
+        
+        # Check cooldown
+        if time.time() - self.last_screening_time < self.screening_cooldown:
+            remaining = int(self.screening_cooldown - (time.time() - self.last_screening_time))
+            return False, f"Cooldown: {remaining}s remaining"
+        
+        return True, "OK"
+    
+    def trigger_screening(self, reason="Position closed"):
+        """Trigger re-screening when position closes"""
+        can_trigger, reason = self.can_trigger_screening()
+        
+        if not can_trigger:
+            print(f"⏸️ Cannot trigger screening: {reason}")
+            return
+        
+        print(f"🔍 Triggering re-screening ({reason})...")
+        
+        try:
+            # Get fresh signals
+            top_picks = self.screener.get_top_picks(limit=5, min_score=1)
+            
+            if not top_picks:
+                print("No signals found")
+                return
+            
+            # Filter out existing positions and blacklisted coins
+            existing_symbols = set(self.trader.positions.keys())
+            self.cleanup_blacklist()  # Remove expired blacklist entries
+            
+            filtered_picks = [
+                p for p in top_picks 
+                if p['symbol'] not in existing_symbols 
+                and p['symbol'] not in self.blacklisted_coins
+            ]
+            
+            if not filtered_picks:
+                print("No new signals (all filtered)")
+                return
+            
+            # Open position for best signal
+            best_signal = filtered_picks[0]
+            print(f"🎯 Best signal: {best_signal['symbol']} (Score: {best_signal['score']})")
+            
+            # Process the signal
+            self.process_signal(best_signal)
+            
+            # Update last screening time
+            self.last_screening_time = time.time()
+            
+            # Send notification
+            self.telegram.send_message(f"""
+🔍 *RE-SCREENING TRIGGERED*
+
+Reason: {reason}
+Best Signal: {best_signal['symbol']}
+Score: {best_signal['score']}
+
+_Position opened automatically._
+""")
+            
+        except Exception as e:
+            print(f"❌ Error in re-screening: {e}")
+            self.telegram.send_message(f"⚠️ Re-screening error: {str(e)}")
+    
+    def cleanup_blacklist(self):
+        """Remove expired blacklist entries"""
+        current_time = time.time()
+        expired = [symbol for symbol, timestamp in self.blacklisted_coins.items() 
+                   if current_time - timestamp > self.blacklist_duration]
+        
+        for symbol in expired:
+            del self.blacklisted_coins[symbol]
+        
+        if expired:
+            print(f"🧹 Cleaned {len(expired)} expired blacklist entries")
+    
+    def blacklist_coin(self, symbol, reason="SL_HIT"):
+        """Add coin to blacklist (avoid re-entry after SL)"""
+        self.blacklisted_coins[symbol] = time.time()
+        print(f"⛔ Blacklisted {symbol} for 30 min ({reason})")
     
     def send_screening_results(self, picks):
         """Send screening results with dynamic TP/SL to Telegram"""
@@ -370,6 +481,7 @@ Monitoring markets...
                         self.send_screening_results(top_picks)
                     
                     last_screening_time = time.time()
+                    self.last_screening_time = time.time()  # Track for re-screening cooldown
                 
                 # Scan for signals on active symbols
                 print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(self.active_symbols)} coins...")

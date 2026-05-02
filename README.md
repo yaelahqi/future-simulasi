@@ -103,6 +103,7 @@ python main.py
 | `/close SYMBOL` | Close specific position (e.g., `/close SOL`) |
 | `/closeall` | Close all open positions |
 | `/reset` | Reset capital to initial (closes all positions) |
+| `/screen` | Manual screening trigger (get fresh signals) |
 
 ### Info Commands
 
@@ -248,6 +249,31 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 ## 📊 Dynamic TP/SL from Screening
 
 Bot now calculates **Take Profit** and **Stop Loss** dynamically based on market levels:
+
+## 🔄 Auto Re-Screening on Position Close
+
+When a position closes (TP/SL hit), bot automatically:
+
+```
+1. Checks if slot available (< MAX_POSITIONS)
+2. Checks cooldown (5 min since last screening)
+3. Blacklists coin if SL hit (30 min avoid re-entry)
+4. Triggers fresh screening
+5. Opens best new signal automatically
+```
+
+**Benefits:**
+- ✅ No stale signals (always fresh data)
+- ✅ Capital always working (slots filled quickly)
+- ✅ No missed opportunities
+- ✅ Smart blacklist (avoid re-entering losers)
+
+**Manual Trigger:**
+```
+/screen  # Get fresh signals anytime
+```
+
+---
 
 ### How It Works:
 
