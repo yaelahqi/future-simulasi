@@ -9,6 +9,7 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 - 📝 **Paper Trading** - Test strategies risk-free
 - 🔄 **Auto Execution** - Open/close positions based on signals
 - 📈 **Portfolio Tracking** - PnL, win rate, trade history
+- 🔍 **Market Screener** - Auto-scan and select best coins
 - ⚙️ **Configurable** - Easy setup via environment variables
 
 ## 📋 Requirements
@@ -92,7 +93,10 @@ python main.py
 | `TAKE_PROFIT_PCT` | 5.0 | Take profit percentage |
 | `STOP_LOSS_PCT` | 5.0 | Stop loss percentage |
 | `TIMEFRAME` | 15m | Chart timeframe |
-| `SYMBOLS` | SOL,BTC,ETH | Coins to track |
+| `SYMBOLS` | SOL,BTC,ETH | Coins to track (if screening disabled) |
+| `SCREENING_ENABLED` | true | Auto-scan market for best coins |
+| `SCREENING_MIN_VOLUME` | 1000000 | Min 24h volume ($1M) |
+| `TOP_N_COINS` | 10 | Number of coins to track |
 
 ### Signal Logic
 

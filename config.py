@@ -39,3 +39,8 @@ STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 5.0))  # 5%
 # ============= LOG SETTINGS =============
 LOG_FILE = os.getenv("LOG_FILE", "logs/trades.log")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ============= SCREENING SETTINGS =============
+SCREENING_ENABLED = os.getenv("SCREENING_ENABLED", "true").lower() == "true"
+SCREENING_MIN_VOLUME = float(os.getenv("SCREENING_MIN_VOLUME", 1_000_000))  # $1M min volume
+TOP_N_COINS = int(os.getenv("TOP_N_COINS", 10))  # Track top 10 coins

@@ -8,21 +8,25 @@ import signal
 import sys
 from datetime import datetime
 from config import (
-    SYMBOLS, PAPER_TRADING, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    SYMBOLS, PAPER_TRADING, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    SCREENING_ENABLED, SCREENING_MIN_VOLUME, TOP_N_COINS
 )
 from signal_generator import SignalGenerator
 from paper_trader import PaperTrader
 from telegram_bot import TelegramBot
+from screener import CryptoScreener
 
 
 class TradingBot:
     def __init__(self):
         self.signal_gen = SignalGenerator()
+        self.screener = CryptoScreener(min_volume_usd=SCREENING_MIN_VOLUME) if SCREENING_ENABLED else None
         self.trader = PaperTrader() if PAPER_TRADING else None
         self.telegram = TelegramBot()
         self.running = True
         self.last_signal_time = {}
         self.scan_interval = 300  # 5 minutes
+        self.active_symbols = list(SYMBOLS) if not SCREENING_ENABLED else []
         
         # Load previous state if exists
         if self.trader:
@@ -88,6 +92,25 @@ class TradingBot:
             summary = self.trader.get_portfolio_summary()
             self.telegram.send_portfolio_summary(summary)
     
+    def send_screening_results(self, picks):
+        """Send screening results to Telegram"""
+        if not picks:
+            return
+        
+        text = "🔍 *MARKET SCREENER RESULTS*\n\n"
+        text += f"Top {len(picks)} coins ranked by signal strength:\n\n"
+        
+        for i, pick in enumerate(picks[:5], 1):  # Top 5
+            emoji = '🟢' if pick['signal'] == 'BUY' else ('🔴' if pick['signal'] == 'SELL' else '🟡')
+            text += f"{i}. {emoji} *{pick['symbol']}*\n"
+            text += f"   Price: ${pick['price']:.4f}\n"
+            text += f"   RSI: {pick['rsi']:.1f} | Score: {pick['score']}\n"
+            text += f"   24h: {pick.get('change_24h', 0):+.2f}%\n\n"
+        
+        text += f"_Scan time: {datetime.now().strftime('%H:%M:%S')}._"
+        
+        self.telegram.send_message(text)
+    
     def run(self):
         """Main bot loop"""
         # Setup signal handlers
@@ -112,18 +135,33 @@ Monitoring markets...
         
         last_summary_time = time.time()
         summary_interval = 3600  # Send summary every hour
+        last_screening_time = 0
+        screening_interval = 1800  # Screen every 30 minutes
         
         while self.running:
             try:
-                # Scan for signals
-                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning markets...")
-                signals = self.signal_gen.scan_all_symbols()
+                # Run market screening if enabled
+                if self.screener and time.time() - last_screening_time > screening_interval:
+                    print(f"\n🔍 Running market screener...")
+                    top_picks = self.screener.get_top_picks(limit=TOP_N_COINS, min_score=1)
+                    
+                    if top_picks:
+                        self.active_symbols = [p['symbol'] for p in top_picks]
+                        print(f"✅ Selected {len(self.active_symbols)} coins: {', '.join(self.active_symbols)}")
+                        
+                        # Send screening results to Telegram
+                        self.send_screening_results(top_picks)
+                    
+                    last_screening_time = time.time()
                 
-                for signal_data in signals:
+                # Scan for signals on active symbols
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(self.active_symbols)} coins...")
+                
+                for symbol in self.active_symbols:
+                    signal_data = self.signal_gen.generate_signal(symbol)
                     print(f"  {signal_data['symbol']}: {signal_data['signal']} @ ${signal_data.get('price', 0):.2f}")
                     
                     # Rate limit signals (max 1 per symbol per 15 min)
-                    symbol = signal_data['symbol']
                     last_time = self.last_signal_time.get(symbol, 0)
                     if time.time() - last_time < 900:  # 15 minutes
                         continue
