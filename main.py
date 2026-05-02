@@ -16,6 +16,7 @@ from signal_generator import SignalGenerator
 from paper_trader import PaperTrader
 from telegram_bot import TelegramBot
 from screener import CryptoScreener
+from tp_sl_calculator import calculate_dynamic_tp_sl
 
 
 class TradingBot:
@@ -266,16 +267,49 @@ _Tracking: {} coin(s)_
                 print(f"⚠️ Already have position for {symbol}, skipping")
                 return
             
-            # Execute paper trade with dynamic TP/SL from screening
-            if signal_type == 'BUY':
-                position = self.trader.open_position(
-                    symbol, 
-                    signal_data['price'], 
-                    signal_type,
-                    tp=signal_data.get('tp'),  # Dynamic TP from screening
-                    sl=signal_data.get('sl'),  # Dynamic SL from screening
-                    rr_ratio=signal_data.get('rr_ratio')  # R:R ratio
-                )
+            # Execute paper trade with FRESH TP/SL calculation on entry
+            if signal_type in ['BUY', 'STRONG_BUY']:
+                try:
+                    # Fetch fresh OHLCV data for accurate TP/SL
+                    df = self.signal_gen.fetch_ohlcv(symbol)
+                    if df is not None and len(df) >= 50:
+                        current_price = df['close'].iloc[-1]
+                        
+                        # Re-calculate TP/SL with fresh data
+                        levels = calculate_dynamic_tp_sl(df, current_price, signal_type)
+                        
+                        print(f"📊 Fresh TP/SL for {symbol}: TP ${levels['tp']:.4f}, SL ${levels['sl']:.4f}, R:R {levels['rr_ratio']}:1")
+                        
+                        position = self.trader.open_position(
+                            symbol, 
+                            current_price,  # Use fresh price
+                            signal_type,
+                            tp=levels['tp'],  # Fresh TP
+                            sl=levels['sl'],  # Fresh SL
+                            rr_ratio=levels['rr_ratio']  # Fresh R:R
+                        )
+                    else:
+                        # Fallback to screening data if fresh fetch fails
+                        print(f"⚠️ Using screening data for {symbol} (fresh fetch failed)")
+                        position = self.trader.open_position(
+                            symbol, 
+                            signal_data['price'], 
+                            signal_type,
+                            tp=signal_data.get('tp'),
+                            sl=signal_data.get('sl'),
+                            rr_ratio=signal_data.get('rr_ratio')
+                        )
+                except Exception as e:
+                    print(f"❌ Error fetching fresh data for {symbol}: {e}")
+                    # Fallback to screening data
+                    position = self.trader.open_position(
+                        symbol, 
+                        signal_data['price'], 
+                        signal_type,
+                        tp=signal_data.get('tp'),
+                        sl=signal_data.get('sl'),
+                        rr_ratio=signal_data.get('rr_ratio')
+                    )
                 
                 # Check if position opened successfully
                 if 'error' in position:

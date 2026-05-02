@@ -248,7 +248,29 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 
 ## 📊 Dynamic TP/SL from Screening
 
-Bot now calculates **Take Profit** and **Stop Loss** dynamically based on market levels:
+Bot calculates **Take Profit** and **Stop Loss** dynamically using:
+
+```
+1. Recent highs/lows (20 candles)
+2. Bollinger Bands
+3. ATR volatility
+4. Minimum R:R 1:1.5 enforced
+```
+
+### Fresh TP/SL on Entry
+
+When opening a position, bot **re-calculates TP/SL** with fresh market data:
+
+```
+Screening: 07:30 - XRP @ $1.3955, TP: $1.3962, SL: $1.3950
+Signal:    07:45 - XRP @ $1.4000, TP: $1.4010, SL: $1.3985 (fresh!)
+```
+
+**Benefits:**
+- ✅ Accurate entry price
+- ✅ Current market levels
+- ✅ No stale data
+- ✅ Consistent R:R ratio
 
 ## ⏱️ Position Check Interval
 
