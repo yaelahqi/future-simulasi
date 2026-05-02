@@ -25,6 +25,10 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 
 ## 🚀 Quick Start
 
+### ⚡ No API Key Needed!
+
+**This bot uses PAPER TRADING only** - no Binance API key required! It fetches public price data without authentication.
+
 ### 1. Clone Repository
 
 ```bash
@@ -52,6 +56,8 @@ pip install -r requirements.txt
 3. Copy your **Chat ID**
 
 ### 5. Configure Environment
+
+> **Note:** No exchange API key needed! Bot uses public price data only.
 
 ```bash
 cp .env.example .env
@@ -498,6 +504,25 @@ which python3
 
 # Update ecosystem.config.js with correct paths
 ```
+
+## ❓ FAQ
+
+### Do I need a Binance API key?
+**No!** This bot uses paper trading only and fetches public price data without authentication. API keys are only needed if you enable live trading in the future.
+
+### Is my capital safe?
+**Yes!** This is paper trading (simulation) only. No real money is used. Your actual funds remain safe in your wallet/exchange.
+
+### Can I switch to live trading later?
+**Yes!** Add your API keys to `.env` and enable live trading mode. Make sure to disable withdrawals on your API key for security.
+
+### Which exchanges are supported?
+**Any exchange supported by CCXT:** Binance, Bybit, OKX, Kraken, etc. Just change `EXCHANGE_ID` in `.env`.
+
+### How accurate is paper trading?
+**Very accurate!** Bot uses real market prices from exchanges. The only difference is no real order execution.
+
+---
 
 ## 📝 License
 

@@ -16,8 +16,12 @@ from config import (
 
 class SignalGenerator:
     def __init__(self):
+        # No API keys needed for public data (prices, OHLCV)
         self.exchange = getattr(ccxt, EXCHANGE_ID)({
             'enableRateLimit': True,
+            # API keys only needed for private endpoints (orders, balances)
+            # 'apiKey': API_KEY,  # Not needed for paper trading
+            # 'secret': API_SECRET,  # Not needed for paper trading
         })
     
     def fetch_ohlcv(self, symbol, timeframe=TIMEFRAME, limit=100):

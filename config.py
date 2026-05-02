@@ -14,8 +14,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
 
 # ============= EXCHANGE CONFIG =============
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "binance")  # binance, bybit, okx
-API_KEY = os.getenv("API_KEY", "")  # Only needed for live trading
-API_SECRET = os.getenv("API_SECRET", "")  # Only needed for live trading
+# API keys NOT needed for paper trading (public data only)
+# Only needed if you enable live trading in future
+API_KEY = os.getenv("API_KEY", "")  # Optional
+API_SECRET = os.getenv("API_SECRET", "")  # Optional
 
 # ============= TRADING CONFIG =============
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", 10.00))  # USD
