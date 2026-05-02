@@ -29,7 +29,6 @@ class TradingBot:
         self.scan_interval = 120  # 2 minutes (balanced - recommended)
         self.active_symbols = list(SYMBOLS) if not SCREENING_ENABLED else []
         self.trading_enabled = TRADING_ENABLED  # Can be toggled via Telegram
-        self.last_processed_msg_id = 0
         
         # Re-screening on position close
         self.last_screening_time = 0
@@ -40,7 +39,7 @@ class TradingBot:
         # Telegram command handler (separate thread)
         self.command_interval = 5  # Check commands every 5 seconds
         self.telegram_thread = None
-        self.last_update_id = 0
+        self.last_update_id = 0  # Track last processed update ID from Telegram
         
         # Load previous state if exists
         if self.trader:
@@ -70,7 +69,7 @@ class TradingBot:
     def handle_telegram_commands(self):
         """Check and handle Telegram commands (called from thread)"""
         try:
-            updates = self.telegram.get_updates(offset=self.last_processed_msg_id + 1)
+            updates = self.telegram.get_updates(offset=self.last_update_id + 1)
             if not updates or 'result' not in updates:
                 return
             
@@ -80,10 +79,14 @@ class TradingBot:
                 
                 chat_id = update['message']['chat']['id']
                 text = update['message']['text'].strip()
-                message_id = update['message']['message_id']
+                update_id = update['update_id']  # Use update_id, not message_id
                 
-                # Update last processed message ID
-                self.last_processed_msg_id = message_id
+                # Skip if already processed
+                if update_id <= self.last_update_id:
+                    continue
+                
+                # Update last processed update ID
+                self.last_update_id = update_id
                 
                 # Only respond to authorized chat
                 if str(chat_id) != str(TELEGRAM_CHAT_ID):
