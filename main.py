@@ -553,9 +553,14 @@ Monitoring markets...
                     signal_data = self.signal_gen.generate_signal(symbol)
                     print(f"  {signal_data['symbol']}: {signal_data['signal']} @ ${signal_data.get('price', 0):.2f}")
                     
-                    # Rate limit signals (max 1 per symbol per 15 min)
+                    # Skip if already have position (avoid re-entry)
+                    if symbol in self.trader.positions:
+                        print(f"    ⚠️ Already have position, skipping")
+                        continue
+                    
+                    # Rate limit: Only process signal every 5 min (was 15 min)
                     last_time = self.last_signal_time.get(symbol, 0)
-                    if time.time() - last_time < 900:  # 15 minutes
+                    if time.time() - last_time < 300:  # 5 minutes
                         continue
                     
                     self.last_signal_time[symbol] = time.time()
