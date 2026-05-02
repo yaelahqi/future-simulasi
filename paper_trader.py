@@ -15,10 +15,12 @@ from config import (
 
 class PaperTrader:
     def __init__(self):
+        self.initial_capital = INITIAL_CAPITAL
         self.capital = INITIAL_CAPITAL
         self.leverage = LEVERAGE
         self.positions = {}
         self.trade_history = []
+        self.locked_capital = 0.0  # Capital locked in open positions
         self.ensure_log_dir()
     
     def ensure_log_dir(self):
@@ -49,8 +51,13 @@ class PaperTrader:
                 'signal': signal_type
             }
         
-        position_size = self.capital * self.leverage
+        # Calculate position size based on AVAILABLE capital
+        available_capital = self.capital - self.locked_capital
+        position_size = available_capital * self.leverage
         quantity = position_size / entry_price
+        
+        # Calculate margin required (position_size / leverage)
+        margin_required = position_size / self.leverage
         
         # Calculate TP and SL
         if signal_type == 'BUY':
@@ -66,6 +73,7 @@ class PaperTrader:
             'entry_price': entry_price,
             'quantity': quantity,
             'size_usd': position_size,
+            'margin': margin_required,
             'take_profit': take_profit,
             'stop_loss': stop_loss,
             'opened_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -73,6 +81,9 @@ class PaperTrader:
         }
         
         self.positions[symbol] = position
+        
+        # Lock capital
+        self.locked_capital += margin_required
         
         # Log the trade
         self.log_trade('OPEN', position)
@@ -97,8 +108,14 @@ class PaperTrader:
         
         pnl_pct = (pnl / self.capital) * 100
         
-        # Update capital
-        self.capital += pnl
+        # Update capital (release margin + PnL)
+        margin_released = position.get('margin', position['size_usd'] / self.leverage)
+        self.capital += pnl  # PnL added/subtracted
+        self.locked_capital -= margin_released  # Release locked margin
+        
+        # Ensure locked_capital doesn't go negative
+        if self.locked_capital < 0:
+            self.locked_capital = 0.0
         
         # Create closed position record
         closed_position = {
@@ -155,17 +172,13 @@ class PaperTrader:
     
     def get_portfolio_summary(self):
         """Get current portfolio summary"""
-        open_pnl = 0
-        
-        for symbol, position in self.positions.items():
-            # Calculate unrealized PnL (will be updated with real prices)
-            pass
-        
         return {
-            'initial_capital': INITIAL_CAPITAL,
+            'initial_capital': self.initial_capital,
             'current_capital': self.capital,
-            'total_pnl': self.capital - INITIAL_CAPITAL,
-            'total_pnl_pct': ((self.capital - INITIAL_CAPITAL) / INITIAL_CAPITAL) * 100,
+            'locked_capital': self.locked_capital,
+            'available_capital': self.capital - self.locked_capital,
+            'total_pnl': self.capital - self.initial_capital,
+            'total_pnl_pct': ((self.capital - self.initial_capital) / self.initial_capital) * 100,
             'open_positions': len(self.positions),
             'total_trades': len(self.trade_history),
             'winning_trades': len([t for t in self.trade_history if t.get('pnl', 0) > 0]),

@@ -10,6 +10,8 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 - 🔄 **Auto Execution** - Open/close positions based on signals
 - 📈 **Portfolio Tracking** - PnL, win rate, trade history
 - 🔍 **Market Screener** - Auto-scan and select best coins
+- 🚀 **Auto-Compounding** - Profits automatically increase position size
+- 💵 **Capital Management** - Track locked vs available capital
 - ⚙️ **Configurable** - Easy setup via environment variables
 
 ## 📋 Requirements

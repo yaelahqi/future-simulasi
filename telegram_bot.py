@@ -191,6 +191,8 @@ class TelegramBot:
         text += f"*Capital:*\n"
         text += f"• Initial: ${summary['initial_capital']:.2f}\n"
         text += f"• Current: ${summary['current_capital']:.2f}\n"
+        text += f"• Locked: ${summary['locked_capital']:.2f} 🔒\n"
+        text += f"• Available: ${summary['available_capital']:.2f} 💵\n"
         text += f"• Total P&L: {pnl_color}${summary['total_pnl']:.2f} ({pnl_color}{summary['total_pnl_pct']:.2f}%)\n\n"
         
         text += f"*Trading Stats:*\n"
@@ -202,7 +204,12 @@ class TelegramBot:
         if summary['open_positions'] > 0:
             text += f"• Open Positions: {summary['open_positions']} 📊\n"
         
-        text += f"\n_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
+        # Show compounding info
+        if summary['total_pnl'] > 0:
+            text += f"\n🚀 *Compounding Active!*\n"
+            text += f"Position size increased by {summary['total_pnl_pct']:.1f}%"
+        
+        text += f"\n\n_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
         
         return self.send_message(text)
 
