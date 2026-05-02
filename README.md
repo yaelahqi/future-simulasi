@@ -75,11 +75,13 @@ python main.py
 
 ## 📱 Telegram Commands
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start bot |
-| `/status` | Portfolio summary |
-| `/help` | Show help |
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/start` | - | Start bot |
+| `/positions` | `/pos` | View open positions |
+| `/pnl` | `/p&l` | View P&L summary |
+| `/status` | - | Portfolio overview |
+| `/help` | - | Show all commands |
 
 ## 🔧 Configuration
 

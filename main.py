@@ -37,6 +37,73 @@ class TradingBot:
         print("\n🛑 Shutting down bot...")
         self.running = False
     
+    def handle_telegram_commands(self):
+        """Check and handle Telegram commands"""
+        try:
+            updates = self.telegram.get_updates()
+            if not updates or 'result' not in updates:
+                return
+            
+            for update in updates['result']:
+                if 'message' not in update or 'text' not in update['message']:
+                    continue
+                
+                chat_id = update['message']['chat']['id']
+                text = update['message']['text'].strip().lower()
+                message_id = update['message']['message_id']
+                
+                # Only respond to authorized chat
+                if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                    continue
+                
+                # Handle commands
+                if text == '/positions' or text == '/pos':
+                    if self.trader:
+                        self.telegram.send_positions(self.trader.positions)
+                    else:
+                        self.telegram.send_message("❌ Paper trading not enabled")
+                
+                elif text == '/pnl' or text == '/p&l':
+                    if self.trader:
+                        summary = self.trader.get_portfolio_summary()
+                        self.telegram.send_pnl(summary)
+                    else:
+                        self.telegram.send_message("❌ Paper trading not enabled")
+                
+                elif text == '/start' or text == '/help':
+                    help_text = """
+🤖 *Crypto Trading Bot Commands*
+
+📊 *Portfolio:*
+• /positions - View open positions
+• /pnl - View P&L summary
+• /status - Portfolio overview
+
+⚙️ *Bot Info:*
+• /start - Start bot
+• /help - Show this help
+
+_Screening: {}_
+_Tracking: {} coin(s)_
+""".format(
+                        'Enabled 🔍' if self.screener else 'Disabled ❌',
+                        len(self.active_symbols)
+                    )
+                    self.telegram.send_message(help_text)
+                
+                elif text == '/status':
+                    if self.trader:
+                        summary = self.trader.get_portfolio_summary()
+                        self.telegram.send_portfolio_summary(summary)
+                    else:
+                        self.telegram.send_message("❌ Paper trading not enabled")
+                
+                # Mark as processed (delete or ignore)
+                # Note: For production, track processed message IDs
+                
+        except Exception as e:
+            print(f"Error handling commands: {e}")
+    
     def process_signal(self, signal_data):
         """Process trading signal and execute if needed"""
         symbol = signal_data['symbol']
@@ -62,8 +129,29 @@ class TradingBot:
                     signal_data['price'], 
                     signal_type
                 )
-                self.telegram.send_position_opened(position)
-                print(f"✅ Opened position: {symbol} @ ${signal_data['price']:.2f}")
+                
+                # Check if position opened successfully
+                if 'error' in position:
+                    if position['error'] == 'INSUFFICIENT_CAPITAL':
+                        # Send alert about no capital
+                        self.telegram.send_message(f"""
+⚠️ *INSUFFICIENT CAPITAL*
+
+Signal: {signal_type} {symbol}
+Price: ${signal_data['price']:.4f}
+
+{position['message']}
+
+💡 *Action Needed:*
+• Reset capital in config
+• Or wait for positions to close
+""")
+                        print(f"❌ Cannot open {symbol}: {position['message']}")
+                    else:
+                        print(f"❌ Error opening position: {position}")
+                else:
+                    self.telegram.send_position_opened(position)
+                    print(f"✅ Opened position: {symbol} @ ${signal_data['price']:.2f}")
     
     def check_open_positions(self):
         """Check and update open positions"""
@@ -180,6 +268,9 @@ Monitoring markets...
                 # Save state
                 if self.trader:
                     self.trader.save_state()
+                
+                # Check Telegram commands
+                self.handle_telegram_commands()
                 
                 # Wait for next scan
                 time.sleep(self.scan_interval)

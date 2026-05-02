@@ -28,8 +28,27 @@ class PaperTrader:
     def open_position(self, symbol, entry_price, signal_type='BUY'):
         """
         Open a paper trading position
-        Returns: dict with position info
+        Returns: dict with position info or error if insufficient capital
         """
+        # Check if enough capital
+        if self.capital <= 0:
+            return {
+                'error': 'INSUFFICIENT_CAPITAL',
+                'message': f'No capital available. Current: ${self.capital:.2f}',
+                'symbol': symbol,
+                'signal': signal_type
+            }
+        
+        # Check minimum position size (at least $1)
+        min_capital_needed = 1.0 / self.leverage
+        if self.capital < min_capital_needed:
+            return {
+                'error': 'INSUFFICIENT_CAPITAL',
+                'message': f'Minimum capital needed: ${min_capital_needed:.2f}. Current: ${self.capital:.2f}',
+                'symbol': symbol,
+                'signal': signal_type
+            }
+        
         position_size = self.capital * self.leverage
         quantity = position_size / entry_price
         

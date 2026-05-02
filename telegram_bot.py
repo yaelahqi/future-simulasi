@@ -159,6 +159,52 @@ class TelegramBot:
         except Exception as e:
             print(f"Error getting bot info: {e}")
             return None
+    
+    def send_positions(self, positions):
+        """Send current open positions"""
+        if not positions:
+            text = "📭 *NO OPEN POSITIONS*\n\nNo active trades at the moment.\n\nWaiting for new signals..."
+            return self.send_message(text)
+        
+        text = "📊 *OPEN POSITIONS*\n\n"
+        text += f"Total: {len(positions)} position(s)\n\n"
+        
+        for symbol, pos in positions.items():
+            emoji = '🟢' if pos['type'] == 'BUY' else '🔴'
+            text += f"{emoji} *{symbol}*\n"
+            text += f"Type: {pos['type']}\n"
+            text += f"Entry: ${pos['entry_price']:.4f}\n"
+            text += f"Size: ${pos['size_usd']:.2f} ({pos['quantity']:.4f} coins)\n"
+            text += f"TP: ${pos['take_profit']:.4f} | SL: ${pos['stop_loss']:.4f}\n"
+            text += f"Opened: {pos['opened_at']}\n\n"
+        
+        return self.send_message(text)
+    
+    def send_pnl(self, summary):
+        """Send PnL summary"""
+        pnl_emoji = '✅' if summary['total_pnl'] >= 0 else '❌'
+        pnl_color = '+' if summary['total_pnl'] >= 0 else ''
+        
+        win_rate = (summary['winning_trades'] / max(summary['total_trades'], 1)) * 100
+        
+        text = f"💰 *P&L SUMMARY*\n\n"
+        text += f"*Capital:*\n"
+        text += f"• Initial: ${summary['initial_capital']:.2f}\n"
+        text += f"• Current: ${summary['current_capital']:.2f}\n"
+        text += f"• Total P&L: {pnl_color}${summary['total_pnl']:.2f} ({pnl_color}{summary['total_pnl_pct']:.2f}%)\n\n"
+        
+        text += f"*Trading Stats:*\n"
+        text += f"• Total Trades: {summary['total_trades']}\n"
+        text += f"• Winners: {summary['winning_trades']} ✅\n"
+        text += f"• Losers: {summary['losing_trades']} ❌\n"
+        text += f"• Win Rate: {win_rate:.1f}%\n\n"
+        
+        if summary['open_positions'] > 0:
+            text += f"• Open Positions: {summary['open_positions']} 📊\n"
+        
+        text += f"\n_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
+        
+        return self.send_message(text)
 
 
 # Test function
