@@ -256,8 +256,8 @@ _Tracking: {} coin(s)_
         # Send signal to Telegram
         self.telegram.send_signal(signal_data)
         
-        # Skip if HOLD or ERROR
-        if signal_type not in ['BUY', 'SELL']:
+        # Skip if HOLD, ERROR, or not actionable
+        if signal_type not in ['BUY', 'STRONG_BUY', 'SELL']:
             return
         
         # Check if we already have a position

@@ -113,13 +113,22 @@ class SignalGenerator:
             reasons.append(f"Volume spike ({latest['volume']/latest['vol_sma']:.1f}x)")
             confidence += 1
         
-        # Determine final signal
-        if confidence >= 2:
-            signal = 'BUY'
+        # Determine final signal with better thresholds
+        # Score >= 3: STRONG BUY (100% position)
+        # Score == 2: BUY (can open position)
+        # Score 1 to -1: HOLD (wait)
+        # Score <= -2: SELL/AVOID
+        if confidence >= 3:
+            signal = 'STRONG_BUY'  # High confidence
+        elif confidence >= 2:
+            signal = 'BUY'  # Good entry
         elif confidence <= -2:
             signal = 'SELL'
         else:
             signal = 'HOLD'
+        
+        # Calculate dynamic TP/SL based on recent price action
+        tp, sl, rr_ratio = self.calculate_dynamic_tp_sl(df, latest['close'])
         
         return {
             'symbol': symbol,
@@ -129,8 +138,65 @@ class SignalGenerator:
             'macd': latest['macd'],
             'confidence': confidence,
             'reasons': reasons,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'tp': tp,
+            'sl': sl,
+            'rr_ratio': rr_ratio,
+            'tp_pct': ((tp - latest['close']) / latest['close']) * 100 if tp else 0,
+            'sl_pct': ((latest['close'] - sl) / latest['close']) * 100 if sl else 0
         }
+    
+    def calculate_dynamic_tp_sl(self, df, current_price):
+        """
+        Calculate dynamic TP/SL based on technical levels
+        Returns: (tp, sl, rr_ratio)
+        """
+        try:
+            # Get recent highs/lows (last 20 candles)
+            recent_high = df['high'].tail(20).max()
+            recent_low = df['low'].tail(20).min()
+            
+            # Bollinger Bands
+            bb_upper = df['bb_upper'].iloc[-1]
+            bb_lower = df['bb_lower'].iloc[-1]
+            
+            # ATR for volatility-based stops
+            atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
+            
+            # For BUY signals:
+            # TP = resistance (recent high or BB upper)
+            # SL = support (recent low or BB lower)
+            tp = min(recent_high, bb_upper)  # Conservative TP
+            sl = max(recent_low, bb_lower)   # Conservative SL
+            
+            # Ensure minimum R:R of 1:1.5
+            risk = current_price - sl
+            reward = tp - current_price
+            
+            if risk <= 0 or reward <= 0:
+                # Fallback to ATR-based levels
+                tp = current_price * 1.03  # 3% TP
+                sl = current_price * 0.97  # 3% SL
+                rr_ratio = 1.0
+            else:
+                rr_ratio = reward / risk
+                
+                # Adjust if R:R too low
+                if rr_ratio < 1.5:
+                    # Widen TP or tighten SL
+                    sl = current_price - (reward / 1.5)
+                    if sl > recent_low * 0.98:  # Don't go too low
+                        tp = current_price + (risk * 1.5)
+                    rr_ratio = 1.5
+            
+            return round(tp, 4), round(sl, 4), round(rr_ratio, 2)
+            
+        except Exception as e:
+            print(f"Error calculating TP/SL: {e}")
+            # Fallback
+            tp = current_price * 1.05
+            sl = current_price * 0.95
+            return round(tp, 4), round(sl, 4), 1.0
     
     def scan_all_symbols(self):
         """Scan all configured symbols and return signals"""

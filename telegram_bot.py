@@ -57,10 +57,26 @@ class TelegramBot:
         for reason in signal_data.get('reasons', []):
             text += f"• {reason}\n"
         
+        # Show dynamic TP/SL if available
+        if signal_data.get('tp') and signal_data.get('sl'):
+            tp_pct = signal_data.get('tp_pct', 0)
+            sl_pct = signal_data.get('sl_pct', 0)
+            rr_ratio = signal_data.get('rr_ratio', 1.0)
+            
+            text += f"""
+📊 *Dynamic Levels:*
+• TP: ${signal_data['tp']:.4f} (+{tp_pct:.1f}%)
+• SL: ${signal_data['sl']:.4f} (-{sl_pct:.1f}%)
+• R:R: {rr_ratio}:1 {'✅' if rr_ratio >= 1.5 else '⚠️'}
+"""
+        
         text += f"\n*Time:* {signal_data.get('timestamp', 'N/A')}"
         
         if signal_data['signal'] in ['BUY', 'SELL']:
-            text += f"\n\n⚡ *Action Required!* Check your trading bot."
+            if signal_data.get('tp') and signal_data.get('sl'):
+                text += f"\n\n⚡ **Auto-execution enabled!** Position will open if conditions met."
+            else:
+                text += f"\n\n⚡ *Action Required!* Check your trading bot."
         
         return self.send_message(text)
     
