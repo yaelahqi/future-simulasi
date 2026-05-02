@@ -66,18 +66,21 @@ class TelegramBot:
     
     def send_position_opened(self, position):
         """Send notification when position is opened"""
+        tp_type = "📊" if position.get('tp_dynamic') else "⚙️"
+        rr_info = f"\n*R:R Ratio:* {position['rr_ratio']}:1" if position.get('rr_ratio') else ""
+        
         text = f"""
-💼 *POSITION OPENED*
+💼 *POSITION OPENED* {tp_type}
 
 *Symbol:* {position['symbol']}
 *Type:* {position['type']}
-*Entry:* ${position['entry_price']:.2f}
+*Entry:* ${position['entry_price']:.4f}
 *Size:* ${position['size_usd']:.2f} ({position['quantity']:.4f} coins)
 *Leverage:* {position.get('leverage', 10)}x
 
 *Targets:*
-• TP: ${position['take_profit']:.2f}
-• SL: ${position['stop_loss']:.2f}
+• TP: ${position['take_profit']:.4f} {tp_type}
+• SL: ${position['stop_loss']:.4f}{rr_info}
 
 *Time:* {position['opened_at']}
 """

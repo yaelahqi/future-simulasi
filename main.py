@@ -225,12 +225,15 @@ _Tracking: {} coin(s)_
                 print(f"⚠️ Already have position for {symbol}, skipping")
                 return
             
-            # Execute paper trade
+            # Execute paper trade with dynamic TP/SL from screening
             if signal_type == 'BUY':
                 position = self.trader.open_position(
                     symbol, 
                     signal_data['price'], 
-                    signal_type
+                    signal_type,
+                    tp=signal_data.get('tp'),  # Dynamic TP from screening
+                    sl=signal_data.get('sl'),  # Dynamic SL from screening
+                    rr_ratio=signal_data.get('rr_ratio')  # R:R ratio
                 )
                 
                 # Check if position opened successfully
@@ -298,7 +301,7 @@ Price: ${signal_data['price']:.4f}
             self.telegram.send_portfolio_summary(summary)
     
     def send_screening_results(self, picks):
-        """Send screening results to Telegram"""
+        """Send screening results with dynamic TP/SL to Telegram"""
         if not picks:
             return
         
@@ -310,7 +313,16 @@ Price: ${signal_data['price']:.4f}
             text += f"{i}. {emoji} *{pick['symbol']}*\n"
             text += f"   Price: ${pick['price']:.4f}\n"
             text += f"   RSI: {pick['rsi']:.1f} | Score: {pick['score']}\n"
-            text += f"   24h: {pick.get('change_24h', 0):+.2f}%\n\n"
+            text += f"   24h: {pick.get('change_24h', 0):+.2f}%\n"
+            
+            # Show dynamic TP/SL if available
+            if pick.get('tp') and pick.get('sl'):
+                text += f"   TP: ${pick['tp']:.4f} (+{pick.get('tp_pct', 0):.1f}%)\n"
+                text += f"   SL: ${pick['sl']:.4f} (-{pick.get('sl_pct', 0):.1f}%)\n"
+                if pick.get('rr_ratio'):
+                    text += f"   R:R: {pick['rr_ratio']}:1 ✅\n"
+            
+            text += "\n"
         
         text += f"_Scan time: {datetime.now().strftime('%H:%M:%S')}._"
         

@@ -124,9 +124,18 @@ class PaperTrader:
         
         return None
     
-    def open_position(self, symbol, entry_price, signal_type='BUY'):
+    def open_position(self, symbol, entry_price, signal_type='BUY', tp=None, sl=None, rr_ratio=None):
         """
-        Open a paper trading position
+        Open a paper trading position with dynamic or fixed TP/SL
+        
+        Args:
+            symbol: Trading pair
+            entry_price: Entry price
+            signal_type: BUY or SELL
+            tp: Take Profit (optional, dynamic from screening)
+            sl: Stop Loss (optional, dynamic from screening)
+            rr_ratio: Risk/Reward ratio (optional)
+        
         Returns: dict with position info or error if risk rules violated
         """
         # Check risk management rules
@@ -150,20 +159,27 @@ class PaperTrader:
         
         # Calculate position size based on AVAILABLE capital and risk settings
         available_capital = self.capital - self.locked_capital
-        max_position_capital = available_capital * self.position_size_pct  # Risk: only use X% per trade
+        max_position_capital = available_capital * self.position_size_pct
         position_size = max_position_capital * self.leverage
         quantity = position_size / entry_price
         
-        # Calculate margin required (position_size / leverage)
+        # Calculate margin required
         margin_required = position_size / self.leverage
         
-        # Calculate TP and SL
-        if signal_type == 'BUY':
-            take_profit = entry_price * (1 + TAKE_PROFIT_PCT / 100)
-            stop_loss = entry_price * (1 - STOP_LOSS_PCT / 100)
-        else:  # SELL
-            take_profit = entry_price * (1 - TAKE_PROFIT_PCT / 100)
-            stop_loss = entry_price * (1 + STOP_LOSS_PCT / 100)
+        # Use dynamic TP/SL if provided, otherwise use fixed percentages
+        if tp is not None and sl is not None:
+            take_profit = tp
+            stop_loss = sl
+            is_dynamic = True
+        else:
+            # Fallback to fixed percentages from config
+            if signal_type == 'BUY':
+                take_profit = entry_price * (1 + TAKE_PROFIT_PCT / 100)
+                stop_loss = entry_price * (1 - STOP_LOSS_PCT / 100)
+            else:
+                take_profit = entry_price * (1 - TAKE_PROFIT_PCT / 100)
+                stop_loss = entry_price * (1 + STOP_LOSS_PCT / 100)
+            is_dynamic = False
         
         position = {
             'symbol': symbol,
@@ -174,6 +190,8 @@ class PaperTrader:
             'margin': margin_required,
             'take_profit': take_profit,
             'stop_loss': stop_loss,
+            'tp_dynamic': is_dynamic,
+            'rr_ratio': rr_ratio,
             'opened_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'status': 'OPEN'
         }

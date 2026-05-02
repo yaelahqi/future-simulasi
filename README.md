@@ -135,10 +135,12 @@ python main.py
 
 #### Take Profit / Stop Loss
 
+> **Note:** TP/SL now calculated dynamically from market levels (support/resistance). Fixed percentages below are fallback only.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TAKE_PROFIT_PCT` | 5.0 | Take profit percentage |
-| `STOP_LOSS_PCT` | 5.0 | Stop loss percentage |
+| `TAKE_PROFIT_PCT` | 5.0 | Fallback if dynamic levels unavailable |
+| `STOP_LOSS_PCT` | 5.0 | Fallback if dynamic levels unavailable |
 
 #### Market Screening
 
@@ -242,6 +244,42 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 - Cryptocurrency trading is high risk
 - Past performance does not guarantee future results
 - Always do your own research
+
+## 📊 Dynamic TP/SL from Screening
+
+Bot now calculates **Take Profit** and **Stop Loss** dynamically based on market levels:
+
+### How It Works:
+
+```
+1. Screening analyzes OHLCV data
+2. Calculates support/resistance from:
+   • 20-period highs/lows
+   • Bollinger Bands
+   • ATR (volatility)
+3. Sets TP at resistance levels
+4. Sets SL at support levels
+5. Ensures minimum R:R ratio of 1:1.5
+```
+
+### Example Output:
+
+```
+🟢 SOL/USDT
+   Price: $84.50
+   TP: $88.00 (+4.1%)
+   SL: $80.00 (-5.3%)
+   R:R: 1:1.3 ✅
+```
+
+### Benefits:
+
+- ✅ **Market-Based** - TP/SL from actual levels
+- ✅ **Per-Coin** - Different for each coin
+- ✅ **Volatility Adjusted** - Wider for high vol
+- ✅ **Optimal R:R** - Minimum 1:1.5 enforced
+
+---
 
 ## 🛡️ Risk Management Features
 

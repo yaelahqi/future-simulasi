@@ -14,6 +14,74 @@ from config import (
 )
 
 
+def calculate_dynamic_tp_sl(df, current_price):
+    """
+    Calculate dynamic Take Profit and Stop Loss based on technical levels
+    
+    Returns:
+        dict: tp, sl, rr_ratio (risk/reward)
+    """
+    if df is None or len(df) < 50:
+        # Fallback to fixed percentages if insufficient data
+        return {
+            'tp': current_price * 1.05,
+            'sl': current_price * 0.95,
+            'rr_ratio': 1.0
+        }
+    
+    # Calculate indicators if not present
+    if 'bb_upper' not in df.columns:
+        bbands = ta.bbands(df['close'], length=20)
+        df['bb_upper'] = bbands['BBU_20_2.0']
+        df['bb_lower'] = bbands['BBL_20_2.0']
+    
+    if 'atr' not in df.columns:
+        df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+    
+    # Support/Resistance from recent highs/lows (20 periods)
+    resistance = df['high'].rolling(window=20).max().iloc[-1]
+    support = df['low'].rolling(window=20).min().iloc[-1]
+    
+    # Bollinger Bands
+    bb_upper = df['bb_upper'].iloc[-1]
+    bb_lower = df['bb_lower'].iloc[-1]
+    
+    # ATR for volatility-based stops
+    atr = df['atr'].iloc[-1]
+    
+    # Take Profit: Use resistance or BB upper (whichever is closer)
+    tp_candidates = [resistance, bb_upper]
+    tp = min([x for x in tp_candidates if x > current_price], default=current_price * 1.05)
+    
+    # Stop Loss: Use support, BB lower, or ATR-based (whichever is highest)
+    sl_candidates = [support, bb_lower, current_price - (atr * 2)]
+    sl = max([x for x in sl_candidates if x < current_price], default=current_price * 0.95)
+    
+    # Calculate distances
+    tp_distance = tp - current_price
+    sl_distance = current_price - sl
+    
+    # Ensure minimum R:R of 1:1.5
+    min_rr = 1.5
+    if tp_distance < sl_distance * min_rr:
+        # Adjust SL tighter to meet R:R requirement
+        sl = current_price - (tp_distance / min_rr)
+        sl_distance = current_price - sl
+    
+    # Calculate final R:R ratio
+    rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+    
+    return {
+        'tp': round(tp, 4),
+        'sl': round(sl, 4),
+        'rr_ratio': round(rr_ratio, 2),
+        'tp_distance_pct': round((tp_distance / current_price) * 100, 2),
+        'sl_distance_pct': round((sl_distance / current_price) * 100, 2),
+        'resistance': round(resistance, 4),
+        'support': round(support, 4)
+    }
+
+
 class CryptoScreener:
     def __init__(self, min_volume_usd=1_000_000):
         """
@@ -123,10 +191,10 @@ class CryptoScreener:
     
     def analyze_coin(self, symbol):
         """
-        Analyze a single coin
+        Analyze a single coin with dynamic TP/SL
         
         Returns:
-            dict: Analysis results
+            dict: Analysis results with TP/SL levels
         """
         try:
             # Fetch OHLCV
@@ -149,17 +217,29 @@ class CryptoScreener:
             
             # Get latest data
             latest = df.iloc[-1]
+            current_price = latest['close']
+            
+            # Calculate dynamic TP/SL
+            levels = calculate_dynamic_tp_sl(df, current_price)
             
             return {
                 'symbol': symbol,
-                'price': latest['close'],
+                'price': current_price,
                 'rsi': latest['rsi'],
                 'macd': latest['macd'],
                 'macd_signal': latest['macd_signal'],
                 'volume_24h': latest['volume'],
                 'score': score,
                 'signal': 'BUY' if score >= 2 else ('SELL' if score <= -2 else 'HOLD'),
-                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                # Dynamic levels
+                'tp': levels['tp'],
+                'sl': levels['sl'],
+                'rr_ratio': levels['rr_ratio'],
+                'tp_pct': levels['tp_distance_pct'],
+                'sl_pct': levels['sl_distance_pct'],
+                'resistance': levels['resistance'],
+                'support': levels['support']
             }
             
         except Exception as e:
