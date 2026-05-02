@@ -6,6 +6,7 @@ Integrates: Signal Generator + Paper Trader + Telegram Bot
 import time
 import signal
 import sys
+import threading
 from datetime import datetime
 from config import (
     SYMBOLS, PAPER_TRADING, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
@@ -36,6 +37,11 @@ class TradingBot:
         self.blacklisted_coins = {}  # {symbol: timestamp} - coins to avoid after SL
         self.blacklist_duration = 1800  # 30 minutes blacklist after SL hit
         
+        # Telegram command handler (separate thread)
+        self.command_interval = 5  # Check commands every 5 seconds
+        self.telegram_thread = None
+        self.last_update_id = 0
+        
         # Load previous state if exists
         if self.trader:
             self.trader.load_state()
@@ -45,8 +51,24 @@ class TradingBot:
         print("\n🛑 Shutting down bot...")
         self.running = False
     
+    def start_telegram_handler(self):
+        """Start Telegram command handler in separate thread"""
+        self.telegram_thread = threading.Thread(target=self._telegram_handler_loop, daemon=True)
+        self.telegram_thread.start()
+        print(f"📱 Telegram handler started (check every {self.command_interval}s)")
+    
+    def _telegram_handler_loop(self):
+        """Telegram command handler loop - runs in separate thread"""
+        while self.running:
+            try:
+                self.handle_telegram_commands()
+                time.sleep(self.command_interval)  # Only 5 seconds!
+            except Exception as e:
+                print(f"Error in telegram handler: {e}")
+                time.sleep(self.command_interval)
+    
     def handle_telegram_commands(self):
-        """Check and handle Telegram commands"""
+        """Check and handle Telegram commands (called from thread)"""
         try:
             updates = self.telegram.get_updates(offset=self.last_processed_msg_id + 1)
             if not updates or 'result' not in updates:
@@ -459,7 +481,11 @@ Monitoring markets...
         print("🤖 Trading Bot Started!")
         print(f"📊 Symbols: {', '.join(SYMBOLS)}")
         print(f"📈 Scan Interval: {self.scan_interval // 60} minutes")
+        print(f"📱 Command Check: Every {self.command_interval} seconds")
         print("Press Ctrl+C to stop\n")
+        
+        # Start Telegram command handler thread
+        self.start_telegram_handler()
         
         last_summary_time = time.time()
         summary_interval = 3600  # Send summary every hour
@@ -510,8 +536,7 @@ Monitoring markets...
                 if self.trader:
                     self.trader.save_state()
                 
-                # Check Telegram commands
-                self.handle_telegram_commands()
+                # Telegram commands handled in separate thread (no need to call here)
                 
                 # Wait for next scan
                 time.sleep(self.scan_interval)
