@@ -12,6 +12,9 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 - 🔍 **Market Screener** - Auto-scan and select best coins
 - 🚀 **Auto-Compounding** - Profits automatically increase position size
 - 💵 **Capital Management** - Track locked vs available capital
+- 🛡️ **Risk Management** - Max positions, daily loss limit, leverage cap
+- 📊 **Trailing Stop Loss** - Auto-lock profits as price moves in favor
+- 🎮 **Telegram Control** - Pause/resume trading, close positions remotely
 - ⚙️ **Configurable** - Easy setup via environment variables
 
 ## 📋 Requirements
@@ -77,30 +80,69 @@ python main.py
 
 ## 📱 Telegram Commands
 
+### Portfolio Commands
+
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/start` | - | Start bot |
 | `/positions` | `/pos` | View open positions |
 | `/pnl` | `/p&l` | View P&L summary |
 | `/status` | - | Portfolio overview |
+
+### Control Commands
+
+| Command | Description |
+|---------|-------------|
+| `/pause` | Pause trading (no new positions) |
+| `/resume` | Resume trading |
+| `/close SYMBOL` | Close specific position (e.g., `/close SOL`) |
+| `/closeall` | Close all open positions |
+| `/reset` | Reset capital to initial (closes all positions) |
+
+### Info Commands
+
+| Command | Aliases | Description |
+|---------|---------|-------------|
+| `/start` | - | Start bot |
 | `/help` | - | Show all commands |
 
 ## 🔧 Configuration
 
 ### Key Settings
 
+#### Capital & Leverage
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `INITIAL_CAPITAL` | 10.00 | Starting capital (USD) |
 | `LEVERAGE` | 10 | Trading leverage |
+| `MAX_LEVERAGE` | 10 | Hard cap on leverage |
 | `PAPER_TRADING` | true | Simulate trades |
+
+#### Risk Management
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_POSITIONS` | 3 | Max concurrent positions |
+| `MAX_DAILY_LOSS_PCT` | 20.0 | Stop trading if -20% in a day |
+| `POSITION_SIZE_PCT` | 100.0 | % of capital per trade |
+| `TRADING_ENABLED` | true | Global trading toggle |
+
+#### Take Profit / Stop Loss
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `TAKE_PROFIT_PCT` | 5.0 | Take profit percentage |
 | `STOP_LOSS_PCT` | 5.0 | Stop loss percentage |
-| `TIMEFRAME` | 15m | Chart timeframe |
-| `SYMBOLS` | SOL,BTC,ETH | Coins to track (if screening disabled) |
+
+#### Market Screening
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `SCREENING_ENABLED` | true | Auto-scan market for best coins |
 | `SCREENING_MIN_VOLUME` | 1000000 | Min 24h volume ($1M) |
 | `TOP_N_COINS` | 10 | Number of coins to track |
+| `TIMEFRAME` | 15m | Chart timeframe |
+| `SYMBOLS` | SOL,BTC,ETH | Coins to track (if screening disabled) |
 
 ### Signal Logic
 
@@ -194,6 +236,54 @@ Duration: 2026-05-02 21:00:00 → 2026-05-02 23:30:00
 - Cryptocurrency trading is high risk
 - Past performance does not guarantee future results
 - Always do your own research
+
+## 🛡️ Risk Management Features
+
+### Max Positions
+Limits concurrent open positions to avoid overexposure:
+```env
+MAX_POSITIONS=3  # Max 3 positions at once
+```
+
+### Daily Loss Limit
+Stops trading if daily loss exceeds threshold:
+```env
+MAX_DAILY_LOSS_PCT=20.0  # Stop if -20% in a day
+```
+
+### Position Sizing
+Control how much capital per trade:
+```env
+POSITION_SIZE_PCT=100.0  # Use 100% of available capital
+```
+
+### Leverage Cap
+Hard limit on leverage:
+```env
+MAX_LEVERAGE=10  # Never exceed 10x
+```
+
+### Trailing Stop Loss
+Automatically locks in profits:
+- **3% profit**: SL moves to breakeven
+- **5% profit**: SL trails at 2% below current price
+
+**Example:**
+```
+Entry: $84.50
+Initial SL: $80.00 (-5%)
+
+Price hits $88.00 (+4.1%):
+→ SL moves to $84.58 (breakeven)
+
+Price hits $92.00 (+8.8%):
+→ SL moves to $90.16 (2% trailing)
+
+Price drops to $90.16:
+→ Position closes with +6.7% profit (not -5% loss!)
+```
+
+---
 
 ## 🚀 Deployment Guide (24/7 Running)
 

@@ -6,10 +6,11 @@ Tracks PnL, positions, and trade history
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import (
     INITIAL_CAPITAL, LEVERAGE, TAKE_PROFIT_PCT, 
-    STOP_LOSS_PCT, LOG_FILE
+    STOP_LOSS_PCT, LOG_FILE, MAX_POSITIONS, MAX_DAILY_LOSS_PCT,
+    POSITION_SIZE_PCT, MAX_LEVERAGE
 )
 
 
@@ -17,21 +18,127 @@ class PaperTrader:
     def __init__(self):
         self.initial_capital = INITIAL_CAPITAL
         self.capital = INITIAL_CAPITAL
-        self.leverage = LEVERAGE
+        self.leverage = min(LEVERAGE, MAX_LEVERAGE)  # Cap leverage
         self.positions = {}
         self.trade_history = []
         self.locked_capital = 0.0  # Capital locked in open positions
+        self.daily_pnl = 0.0  # Track daily PnL
+        self.last_reset_date = datetime.now().date()
+        self.max_positions = MAX_POSITIONS
+        self.position_size_pct = POSITION_SIZE_PCT / 100.0
+        self.max_daily_loss_pct = MAX_DAILY_LOSS_PCT
         self.ensure_log_dir()
     
     def ensure_log_dir(self):
         """Create logs directory if not exists"""
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
     
+    def reset_daily_stats(self):
+        """Reset daily PnL if new day"""
+        today = datetime.now().date()
+        if today > self.last_reset_date:
+            self.daily_pnl = 0.0
+            self.last_reset_date = today
+            print(f"📅 Daily stats reset. New day: {today}")
+    
+    def can_open_position(self):
+        """
+        Check if we can open a new position based on risk rules
+        Returns: (can_open: bool, reason: str)
+        """
+        self.reset_daily_stats()
+        
+        # Check if trading is enabled
+        # (Will be set by main bot from Telegram commands)
+        
+        # Check max positions
+        if len(self.positions) >= self.max_positions:
+            return False, f"Max positions reached ({self.max_positions})"
+        
+        # Check daily loss limit
+        daily_loss_pct = (self.daily_pnl / self.initial_capital) * 100
+        if daily_loss_pct <= -self.max_daily_loss_pct:
+            return False, f"Daily loss limit hit ({daily_loss_pct:.1f}% < -{self.max_daily_loss_pct}%)"
+        
+        # Check available capital
+        available = self.capital - self.locked_capital
+        if available <= 0:
+            return False, f"No available capital (Locked: ${self.locked_capital:.2f})"
+        
+        return True, "OK"
+    
+    def update_trailing_stop(self, symbol, current_price):
+        """
+        Update trailing stop for a position
+        Moves stop loss up when price goes in favor
+        """
+        if symbol not in self.positions:
+            return None
+        
+        position = self.positions[symbol]
+        
+        if position['type'] == 'BUY':
+            # For long positions, trail stop loss upward
+            if current_price > position['entry_price']:
+                # Calculate profit percentage
+                profit_pct = (current_price - position['entry_price']) / position['entry_price']
+                
+                # If profit > 3%, move SL to breakeven
+                if profit_pct >= 0.03:
+                    new_sl = position['entry_price'] * 1.001  # Breakeven + tiny buffer
+                    if new_sl > position['stop_loss']:
+                        old_sl = position['stop_loss']
+                        position['stop_loss'] = new_sl
+                        position['trailing_stop_active'] = True
+                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
+                
+                # If profit > 5%, trail at 2% below current price
+                elif profit_pct >= 0.05:
+                    new_sl = current_price * 0.98  # 2% trailing
+                    if new_sl > position['stop_loss']:
+                        old_sl = position['stop_loss']
+                        position['stop_loss'] = new_sl
+                        position['trailing_stop_active'] = True
+                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
+        
+        else:  # SELL position
+            # For short positions, trail stop loss downward
+            if current_price < position['entry_price']:
+                profit_pct = (position['entry_price'] - current_price) / position['entry_price']
+                
+                if profit_pct >= 0.03:
+                    new_sl = position['entry_price'] * 0.999
+                    if new_sl < position['stop_loss']:
+                        old_sl = position['stop_loss']
+                        position['stop_loss'] = new_sl
+                        position['trailing_stop_active'] = True
+                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
+                
+                elif profit_pct >= 0.05:
+                    new_sl = current_price * 1.02
+                    if new_sl < position['stop_loss']:
+                        old_sl = position['stop_loss']
+                        position['stop_loss'] = new_sl
+                        position['trailing_stop_active'] = True
+                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
+        
+        return None
+    
     def open_position(self, symbol, entry_price, signal_type='BUY'):
         """
         Open a paper trading position
-        Returns: dict with position info or error if insufficient capital
+        Returns: dict with position info or error if risk rules violated
         """
+        # Check risk management rules
+        can_open, reason = self.can_open_position()
+        if not can_open:
+            return {
+                'error': 'RISK_RULE_VIOLATION',
+                'message': reason,
+                'symbol': symbol,
+                'signal': signal_type
+            }
+        
         # Check if enough capital
         if self.capital <= 0:
             return {
@@ -41,19 +148,10 @@ class PaperTrader:
                 'signal': signal_type
             }
         
-        # Check minimum position size (at least $1)
-        min_capital_needed = 1.0 / self.leverage
-        if self.capital < min_capital_needed:
-            return {
-                'error': 'INSUFFICIENT_CAPITAL',
-                'message': f'Minimum capital needed: ${min_capital_needed:.2f}. Current: ${self.capital:.2f}',
-                'symbol': symbol,
-                'signal': signal_type
-            }
-        
-        # Calculate position size based on AVAILABLE capital
+        # Calculate position size based on AVAILABLE capital and risk settings
         available_capital = self.capital - self.locked_capital
-        position_size = available_capital * self.leverage
+        max_position_capital = available_capital * self.position_size_pct  # Risk: only use X% per trade
+        position_size = max_position_capital * self.leverage
         quantity = position_size / entry_price
         
         # Calculate margin required (position_size / leverage)
@@ -111,6 +209,7 @@ class PaperTrader:
         # Update capital (release margin + PnL)
         margin_released = position.get('margin', position['size_usd'] / self.leverage)
         self.capital += pnl  # PnL added/subtracted
+        self.daily_pnl += pnl  # Track daily PnL
         self.locked_capital -= margin_released  # Release locked margin
         
         # Ensure locked_capital doesn't go negative

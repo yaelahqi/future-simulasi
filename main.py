@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from config import (
     SYMBOLS, PAPER_TRADING, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-    SCREENING_ENABLED, SCREENING_MIN_VOLUME, TOP_N_COINS
+    SCREENING_ENABLED, SCREENING_MIN_VOLUME, TOP_N_COINS, TRADING_ENABLED
 )
 from signal_generator import SignalGenerator
 from paper_trader import PaperTrader
@@ -27,6 +27,8 @@ class TradingBot:
         self.last_signal_time = {}
         self.scan_interval = 300  # 5 minutes
         self.active_symbols = list(SYMBOLS) if not SCREENING_ENABLED else []
+        self.trading_enabled = TRADING_ENABLED  # Can be toggled via Telegram
+        self.last_processed_msg_id = 0
         
         # Load previous state if exists
         if self.trader:
@@ -40,7 +42,7 @@ class TradingBot:
     def handle_telegram_commands(self):
         """Check and handle Telegram commands"""
         try:
-            updates = self.telegram.get_updates()
+            updates = self.telegram.get_updates(offset=self.last_processed_msg_id + 1)
             if not updates or 'result' not in updates:
                 return
             
@@ -49,28 +51,33 @@ class TradingBot:
                     continue
                 
                 chat_id = update['message']['chat']['id']
-                text = update['message']['text'].strip().lower()
+                text = update['message']['text'].strip()
                 message_id = update['message']['message_id']
+                
+                # Update last processed message ID
+                self.last_processed_msg_id = message_id
                 
                 # Only respond to authorized chat
                 if str(chat_id) != str(TELEGRAM_CHAT_ID):
                     continue
                 
-                # Handle commands
-                if text == '/positions' or text == '/pos':
+                # Handle commands (case-insensitive)
+                cmd = text.lower()
+                
+                if cmd in ['/positions', '/pos']:
                     if self.trader:
                         self.telegram.send_positions(self.trader.positions)
                     else:
                         self.telegram.send_message("❌ Paper trading not enabled")
                 
-                elif text == '/pnl' or text == '/p&l':
+                elif cmd in ['/pnl', '/p&l']:
                     if self.trader:
                         summary = self.trader.get_portfolio_summary()
                         self.telegram.send_pnl(summary)
                     else:
                         self.telegram.send_message("❌ Paper trading not enabled")
                 
-                elif text == '/start' or text == '/help':
+                elif cmd in ['/start', '/help']:
                     help_text = """
 🤖 *Crypto Trading Bot Commands*
 
@@ -79,27 +86,123 @@ class TradingBot:
 • /pnl - View P&L summary
 • /status - Portfolio overview
 
+🎮 *Control:*
+• /pause - Pause trading (no new positions)
+• /resume - Resume trading
+• /close SYMBOL - Close specific position (e.g., /close SOL)
+• /closeall - Close all positions
+• /reset - Reset capital to initial
+
 ⚙️ *Bot Info:*
 • /start - Start bot
 • /help - Show this help
 
+_Status: {}_
 _Screening: {}_
 _Tracking: {} coin(s)_
 """.format(
+                        '🟢 Trading' if self.trading_enabled else '🔴 Paused',
                         'Enabled 🔍' if self.screener else 'Disabled ❌',
                         len(self.active_symbols)
                     )
                     self.telegram.send_message(help_text)
                 
-                elif text == '/status':
+                elif cmd == '/status':
                     if self.trader:
                         summary = self.trader.get_portfolio_summary()
                         self.telegram.send_portfolio_summary(summary)
                     else:
                         self.telegram.send_message("❌ Paper trading not enabled")
                 
-                # Mark as processed (delete or ignore)
-                # Note: For production, track processed message IDs
+                elif cmd == '/pause':
+                    self.trading_enabled = False
+                    self.telegram.send_control_response(
+                        'PAUSE', True,
+                        "Trading paused. No new positions will be opened.\n\nExisting positions will continue to be monitored."
+                    )
+                    print("⏸️ Trading paused")
+                
+                elif cmd == '/resume':
+                    self.trading_enabled = True
+                    self.telegram.send_control_response(
+                        'RESUME', True,
+                        "Trading resumed. Bot will open new positions based on signals."
+                    )
+                    print("▶️ Trading resumed")
+                
+                elif cmd.startswith('/close '):
+                    if not self.trader:
+                        self.telegram.send_message("❌ Paper trading not enabled")
+                        continue
+                    
+                    symbol = text.split(' ', 1)[1].strip().upper()
+                    if '/' in symbol:
+                        symbol = symbol  # Already has USDT
+                    else:
+                        symbol = f"{symbol}/USDT"
+                    
+                    if symbol in self.trader.positions:
+                        # Get current price
+                        try:
+                            ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                            close_result = self.trader.close_position(symbol, ticker['last'], 'MANUAL')
+                            self.telegram.send_position_closed(close_result)
+                            print(f"✅ Manually closed {symbol}")
+                        except Exception as e:
+                            self.telegram.send_control_response(
+                                'CLOSE', False,
+                                f"Error closing position: {str(e)}"
+                            )
+                    else:
+                        self.telegram.send_control_response(
+                            'CLOSE', False,
+                            f"No open position for {symbol}"
+                        )
+                
+                elif cmd == '/closeall':
+                    if not self.trader or not self.trader.positions:
+                        self.telegram.send_control_response(
+                            'CLOSEALL', False,
+                            "No open positions to close"
+                        )
+                    else:
+                        closed_count = 0
+                        for symbol in list(self.trader.positions.keys()):
+                            try:
+                                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                                self.trader.close_position(symbol, ticker['last'], 'MANUAL')
+                                closed_count += 1
+                            except:
+                                continue
+                        
+                        self.telegram.send_control_response(
+                            'CLOSEALL', True,
+                            f"Closed {closed_count} position(s)"
+                        )
+                        print(f"✅ Closed all {closed_count} positions")
+                
+                elif cmd == '/reset':
+                    if self.trader:
+                        # Close all positions first
+                        for symbol in list(self.trader.positions.keys()):
+                            try:
+                                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                                self.trader.close_position(symbol, ticker['last'], 'RESET')
+                            except:
+                                continue
+                        
+                        # Reset capital
+                        self.trader.capital = self.trader.initial_capital
+                        self.trader.daily_pnl = 0.0
+                        self.trader.save_state()
+                        
+                        self.telegram.send_control_response(
+                            'RESET', True,
+                            f"Capital reset to ${self.trader.initial_capital:.2f}\n\nAll positions closed."
+                        )
+                        print(f"🔄 Capital reset to ${self.trader.initial_capital:.2f}")
+                    else:
+                        self.telegram.send_message("❌ Paper trading not enabled")
                 
         except Exception as e:
             print(f"Error handling commands: {e}")
@@ -147,6 +250,12 @@ Price: ${signal_data['price']:.4f}
 • Or wait for positions to close
 """)
                         print(f"❌ Cannot open {symbol}: {position['message']}")
+                    
+                    elif position['error'] == 'RISK_RULE_VIOLATION':
+                        # Send risk alert
+                        self.telegram.send_risk_alert('warning', position['message'])
+                        print(f"⚠️ Risk rule violation for {symbol}: {position['message']}")
+                    
                     else:
                         print(f"❌ Error opening position: {position}")
                 else:
@@ -154,17 +263,25 @@ Price: ${signal_data['price']:.4f}
                     print(f"✅ Opened position: {symbol} @ ${signal_data['price']:.2f}")
     
     def check_open_positions(self):
-        """Check and update open positions"""
+        """Check and update open positions (including trailing stops)"""
         if not self.trader:
             return
         
-        # Fetch current prices
+        # Fetch current prices for all active symbols
         current_prices = {}
-        for symbol in SYMBOLS:
+        for symbol in self.trader.positions.keys():
             try:
                 ticker = self.signal_gen.exchange.fetch_ticker(symbol)
                 current_prices[symbol] = ticker['last']
-            except:
+                
+                # Update trailing stops
+                trailing_update = self.trader.update_trailing_stop(symbol, ticker['last'])
+                if trailing_update:
+                    self.telegram.send_trailing_stop_update(trailing_update)
+                    print(f"📊 Trailing stop updated for {symbol}: ${trailing_update['old_sl']:.4f} → ${trailing_update['new_sl']:.4f}")
+                    
+            except Exception as e:
+                print(f"Error fetching price for {symbol}: {e}")
                 continue
         
         # Check for TP/SL hits
@@ -257,7 +374,7 @@ Monitoring markets...
                     self.last_signal_time[symbol] = time.time()
                     self.process_signal(signal_data)
                 
-                # Check open positions
+                # Check open positions (includes trailing stop updates)
                 self.check_open_positions()
                 
                 # Send periodic summary

@@ -44,3 +44,10 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 SCREENING_ENABLED = os.getenv("SCREENING_ENABLED", "true").lower() == "true"
 SCREENING_MIN_VOLUME = float(os.getenv("SCREENING_MIN_VOLUME", 1_000_000))  # $1M min volume
 TOP_N_COINS = int(os.getenv("TOP_N_COINS", 10))  # Track top 10 coins
+
+# ============= RISK MANAGEMENT =============
+MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", 3))  # Max concurrent positions
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", 20.0))  # Stop if -20% in a day
+POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", 100.0))  # % of capital per trade
+MAX_LEVERAGE = int(os.getenv("MAX_LEVERAGE", 10))  # Hard cap on leverage
+TRADING_ENABLED = os.getenv("TRADING_ENABLED", "true").lower() == "true"  # Global trading toggle

@@ -212,6 +212,31 @@ class TelegramBot:
         text += f"\n\n_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
         
         return self.send_message(text)
+    
+    def send_risk_alert(self, alert_type, message):
+        """Send risk management alert"""
+        emoji = '⚠️' if alert_type == 'warning' else '🚨'
+        text = f"{emoji} *RISK ALERT*\n\n"
+        text += f"*Type:* {alert_type.upper()}\n\n"
+        text += f"{message}\n\n"
+        text += f"_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
+        return self.send_message(text)
+    
+    def send_control_response(self, command, status, message):
+        """Send response for control commands"""
+        emoji = '✅' if status else '❌'
+        text = f"{emoji} *{command.upper()}*\n\n"
+        text += message
+        return self.send_message(text)
+    
+    def send_trailing_stop_update(self, update_data):
+        """Send trailing stop update notification"""
+        text = f"📊 *TRAILING STOP UPDATE*\n\n"
+        text += f"*Symbol:* {update_data['symbol']}\n"
+        text += f"*Old SL:* ${update_data['old_sl']:.4f}\n"
+        text += f"*New SL:* ${update_data['new_sl']:.4f}\n\n"
+        text += f"_Profit locked automatically!_"
+        return self.send_message(text)
 
 
 # Test function
