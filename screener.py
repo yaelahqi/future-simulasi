@@ -12,9 +12,10 @@ from config import (
     EXCHANGE_ID, TIMEFRAME, 
     RSI_OVERBOUGHT, RSI_OVERSOLD
 )
+from tp_sl_calculator import calculate_dynamic_tp_sl
 
 
-def calculate_dynamic_tp_sl(df, current_price):
+def _calculate_dynamic_tp_sl_old(df, current_price):
     """
     Calculate dynamic Take Profit and Stop Loss based on technical levels
     
@@ -219,8 +220,8 @@ class CryptoScreener:
             latest = df.iloc[-1]
             current_price = latest['close']
             
-            # Calculate dynamic TP/SL
-            levels = calculate_dynamic_tp_sl(df, current_price)
+            # Calculate dynamic TP/SL using shared module
+            levels = calculate_dynamic_tp_sl(df, current_price, 'BUY' if score >= 2 else 'HOLD')
             
             return {
                 'symbol': symbol,
@@ -232,14 +233,12 @@ class CryptoScreener:
                 'score': score,
                 'signal': 'BUY' if score >= 2 else ('SELL' if score <= -2 else 'HOLD'),
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                # Dynamic levels
+                # Dynamic levels (from shared module)
                 'tp': levels['tp'],
                 'sl': levels['sl'],
                 'rr_ratio': levels['rr_ratio'],
-                'tp_pct': levels['tp_distance_pct'],
-                'sl_pct': levels['sl_distance_pct'],
-                'resistance': levels['resistance'],
-                'support': levels['support']
+                'tp_pct': levels['tp_pct'],
+                'sl_pct': levels['sl_pct']
             }
             
         except Exception as e:
