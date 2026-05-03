@@ -88,11 +88,21 @@ def calculate_dynamic_tp_sl(df, current_price: float, signal_type: str = "BUY") 
             is_bullish = current_price >= ma_20  # tie -> bullish bias
 
         if is_bullish:
+            # TP: prefer nearest technical resistance, but enforce ATR minimum
             tp_candidates = [x for x in (recent_high, bb_upper) if x > current_price]
             tp = min(tp_candidates) if tp_candidates else current_price + (atr_val * 2)
+            # ATR floor so we don't get 0.1% TPs in ranging markets
+            min_tp = current_price + (atr_val * 2)
+            if tp < min_tp:
+                tp = min_tp
 
+            # SL: prefer nearest technical support, but enforce ATR minimum
             sl_candidates = [x for x in (recent_low, bb_lower) if x < current_price]
             sl = max(sl_candidates) if sl_candidates else current_price - atr_val
+            # ATR floor — don't let SL sit inside noise
+            min_sl = current_price - (atr_val * 1.5)
+            if sl > min_sl:
+                sl = min_sl
 
             risk = current_price - sl
             reward = tp - current_price
@@ -121,9 +131,17 @@ def calculate_dynamic_tp_sl(df, current_price: float, signal_type: str = "BUY") 
         # Bearish branch — used by SHORT entries.
         tp_candidates = [x for x in (recent_low, bb_lower) if x < current_price]
         tp = max(tp_candidates) if tp_candidates else current_price - (atr_val * 2)
+        # ATR floor for SHORT TP
+        min_tp = current_price - (atr_val * 2)
+        if tp > min_tp:
+            tp = min_tp
 
         sl_candidates = [x for x in (recent_high, bb_upper) if x > current_price]
         sl = min(sl_candidates) if sl_candidates else current_price + atr_val
+        # ATR floor for SHORT SL
+        min_sl = current_price + (atr_val * 1.5)
+        if sl < min_sl:
+            sl = min_sl
 
         risk = sl - current_price
         reward = current_price - tp
