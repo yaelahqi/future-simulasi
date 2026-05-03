@@ -258,7 +258,13 @@ _Tracking: {} coin(s)_
         self.telegram.send_signal(signal_data)
         
         # Skip if HOLD, ERROR, or not actionable
+        # Note: SELL signals are generated but not actioned (LONG-only bot)
         if signal_type not in ['BUY', 'STRONG_BUY', 'SELL']:
+            return
+        
+        # LONG-only bot: Skip SELL signals (no short selling)
+        if signal_type == 'SELL':
+            print(f"⚠️ SELL signal for {symbol} ignored (LONG-only mode)")
             return
         
         # Check if we already have a position

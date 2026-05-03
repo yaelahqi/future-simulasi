@@ -118,13 +118,13 @@ class SignalGenerator:
         # Score >= 3: STRONG BUY (100% position)
         # Score == 2: BUY (can open position)
         # Score 1 to -1: HOLD (wait)
-        # Score <= -2: SELL/AVOID
+        # Score <= -2: SELL/AVOID (but bot is LONG-only, so convert to HOLD)
         if confidence >= 3:
             signal = 'STRONG_BUY'  # High confidence
         elif confidence >= 2:
             signal = 'BUY'  # Good entry
         elif confidence <= -2:
-            signal = 'SELL'
+            signal = 'SELL'  # Bearish, but LONG-only bot will treat as HOLD
         else:
             signal = 'HOLD'
         
