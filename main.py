@@ -116,6 +116,9 @@ class TradingBot:
         # Pending destructive-command confirmations: cmd -> deadline ts
         self._pending_confirm: dict[str, float] = {}
 
+        # Thread-safety lock for shared mutable state
+        self._lock = threading.Lock()
+
         # Load trader state if present.
         self.trader.load_state()
 
@@ -175,15 +178,21 @@ class TradingBot:
         cmd = text.lower().split(maxsplit=1)[0] if text else ""
 
         if cmd in {"/positions", "/pos"}:
-            self.telegram.send_positions(self.trader.positions)
+            with self._lock:
+                positions_copy = dict(self.trader.positions)
+            self.telegram.send_positions(positions_copy)
             return
 
         if cmd in {"/pnl", "/p&l"}:
-            self.telegram.send_pnl(self.trader.get_portfolio_summary())
+            with self._lock:
+                summary = self.trader.get_portfolio_summary()
+            self.telegram.send_pnl(summary)
             return
 
         if cmd == "/status":
-            self.telegram.send_portfolio_summary(self.trader.get_portfolio_summary())
+            with self._lock:
+                summary = self.trader.get_portfolio_summary()
+            self.telegram.send_portfolio_summary(summary)
             return
 
         if cmd in {"/start", "/help"}:
@@ -191,7 +200,8 @@ class TradingBot:
             return
 
         if cmd == "/pause":
-            self.trading_enabled = False
+            with self._lock:
+                self.trading_enabled = False
             self.telegram.send_control_response(
                 "PAUSE", True,
                 "Trading paused. Existing positions still monitored.",
@@ -200,7 +210,8 @@ class TradingBot:
             return
 
         if cmd == "/resume":
-            self.trading_enabled = True
+            with self._lock:
+                self.trading_enabled = True
             self.telegram.send_control_response(
                 "RESUME", True, "Trading resumed.",
             )
@@ -274,19 +285,23 @@ class TradingBot:
         sym = sym_text.upper()
         if "/" not in sym:
             sym = f"{sym}/USDT"
-        if sym not in self.trader.positions:
+        with self._lock:
+            has_position = sym in self.trader.positions
+        if not has_position:
             self.telegram.send_control_response("CLOSE", False, f"No open position for {sym}")
             return
         try:
             ticker = self.signal_gen.exchange.fetch_ticker(sym)
-            result = self.trader.close_position(sym, float(ticker["last"]), "MANUAL")
+            with self._lock:
+                result = self.trader.close_position(sym, float(ticker["last"]), "MANUAL")
             self.telegram.send_position_closed(result)
             logger.info("Manually closed %s", sym)
         except Exception as exc:
             self.telegram.send_control_response("CLOSE", False, f"Error closing position: {exc}")
 
     def _do_closeall(self) -> None:
-        symbols = list(self.trader.positions.keys())
+        with self._lock:
+            symbols = list(self.trader.positions.keys())
         if not symbols:
             self.telegram.send_control_response("CLOSEALL", False, "No open positions")
             return
@@ -295,7 +310,8 @@ class TradingBot:
         for sym in symbols:
             try:
                 ticker = self.signal_gen.exchange.fetch_ticker(sym)
-                self.trader.close_position(sym, float(ticker["last"]), "MANUAL")
+                with self._lock:
+                    self.trader.close_position(sym, float(ticker["last"]), "MANUAL")
                 closed += 1
             except Exception as exc:
                 logger.warning("Failed to close %s: %s", sym, exc)
@@ -308,8 +324,9 @@ class TradingBot:
 
     def _do_reset(self) -> None:
         self._do_closeall()
-        self.trader.reset()
-        self.trader.save_state()
+        with self._lock:
+            self.trader.reset()
+            self.trader.save_state()
         self.telegram.send_control_response(
             "RESET", True, f"Capital reset to ${self.trader.initial_capital:.2f}",
         )
@@ -321,18 +338,30 @@ class TradingBot:
         symbol = signal_data["symbol"]
         signal_type = signal_data["signal"]
 
+        # Skip stablecoins entirely
+        base = symbol.split("/")[0] if "/" in symbol else symbol
+        if base in {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "EUR",
+                    "USDD", "USDP", "SUSD", "GUSD", "USDe", "USD1", "PYUSD",
+                    "AEUR", "EURI", "CUSD", "CEUR"}:
+            logger.debug("Skipping stablecoin signal: %s", symbol)
+            return
+
         # Notify on actionable signals only to avoid spam on HOLDs.
         if signal_type in {"BUY", "STRONG_BUY", "SELL"}:
             self.telegram.send_signal(signal_data)
 
-        if not self.trading_enabled:
+        with self._lock:
+            trading_on = self.trading_enabled
+            has_position = symbol in self.trader.positions
+
+        if not trading_on:
             logger.debug("Trading disabled, not opening %s", symbol)
             return
 
         if signal_type not in {"BUY", "STRONG_BUY", "SELL"}:
             return
 
-        if symbol in self.trader.positions:
+        if has_position:
             logger.debug("Already have position for %s, skipping", symbol)
             return
 
@@ -351,9 +380,10 @@ class TradingBot:
             sl = signal_data.get("sl")
             rr = signal_data.get("rr_ratio")
 
-        position = self.trader.open_position(
-            symbol, current_price, signal_type, tp=tp, sl=sl, rr_ratio=rr,
-        )
+        with self._lock:
+            position = self.trader.open_position(
+                symbol, current_price, signal_type, tp=tp, sl=sl, rr_ratio=rr,
+            )
 
         if "error" in position:
             err = position["error"]
@@ -376,7 +406,8 @@ class TradingBot:
         logger.info("Opened position %s @ $%.4f", symbol, current_price)
 
     def check_open_positions(self) -> None:
-        symbols = list(self.trader.positions.keys())
+        with self._lock:
+            symbols = list(self.trader.positions.keys())
         if not symbols:
             return
 
@@ -394,7 +425,8 @@ class TradingBot:
                     last = float(ticker["last"])
                     bars[symbol] = {"high": last, "low": last, "last": last}
 
-                trailing = self.trader.update_trailing_stop(symbol, bars[symbol]["last"])
+                with self._lock:
+                    trailing = self.trader.update_trailing_stop(symbol, bars[symbol]["last"])
                 if trailing:
                     self.telegram.send_trailing_stop_update(trailing)
                     logger.info(
@@ -404,7 +436,8 @@ class TradingBot:
             except Exception as exc:
                 logger.warning("Failed to fetch price for %s: %s", symbol, exc)
 
-        closed = self.trader.check_positions(bars)
+        with self._lock:
+            closed = self.trader.check_positions(bars)
         for position in closed:
             self.telegram.send_position_closed(position)
             logger.info(
@@ -420,7 +453,9 @@ class TradingBot:
     # ------------------------------ screening ---------------------------- #
 
     def can_trigger_screening(self) -> tuple[bool, str]:
-        if len(self.trader.positions) >= self.trader.max_positions:
+        with self._lock:
+            max_pos_reached = len(self.trader.positions) >= self.trader.max_positions
+        if max_pos_reached:
             return False, "Max positions reached"
         if time.time() - self.last_screening_time < self.screening_cooldown:
             remaining = int(self.screening_cooldown - (time.time() - self.last_screening_time))
@@ -440,7 +475,8 @@ class TradingBot:
             if not top_picks:
                 logger.info("No re-screening signals")
                 return
-            existing = set(self.trader.positions.keys())
+            with self._lock:
+                existing = set(self.trader.positions.keys())
             self.cleanup_blacklist()
             filtered = [
                 p for p in top_picks
@@ -452,7 +488,8 @@ class TradingBot:
             best = filtered[0]
             logger.info("Best re-screening signal: %s score=%s", best["symbol"], best["score"])
             self.process_signal(best)
-            self.last_screening_time = time.time()
+            with self._lock:
+                self.last_screening_time = time.time()
             self.telegram.send_message(
                 "🔍 <b>RE-SCREENING TRIGGERED</b>\n\n"
                 f"Reason: {esc(reason)}\n"
@@ -526,17 +563,22 @@ class TradingBot:
                     logger.info("Running market screener...")
                     top_picks = self.screener.get_top_picks(limit=TOP_N_COINS, min_score=1)
                     if top_picks:
-                        self.active_symbols = [p["symbol"] for p in top_picks]
+                        with self._lock:
+                            self.active_symbols = [p["symbol"] for p in top_picks]
                         logger.info("Selected %d coins: %s", len(self.active_symbols),
                                     ", ".join(self.active_symbols))
                         for symbol in self.active_symbols:
-                            self.last_signal_time[symbol] = 0
+                            with self._lock:
+                                self.last_signal_time[symbol] = 0
                         self.send_screening_results(top_picks)
                     last_screening_time = time.time()
-                    self.last_screening_time = last_screening_time
+                    with self._lock:
+                        self.last_screening_time = last_screening_time
 
-                logger.info("[%s] Scanning %d coins", _utc_iso(), len(self.active_symbols))
-                for symbol in list(self.active_symbols):
+                with self._lock:
+                    active = list(self.active_symbols)
+                logger.info("[%s] Scanning %d coins", _utc_iso(), len(active))
+                for symbol in active:
                     if self._shutdown.is_set():
                         break
                     signal_data = self.signal_gen.generate_signal(symbol)
@@ -545,19 +587,28 @@ class TradingBot:
                         signal_data.get("signal"), signal_data.get("price", 0) or 0,
                     )
 
-                    if symbol in self.trader.positions:
+                    with self._lock:
+                        has_position = symbol in self.trader.positions
+
+                    if has_position:
                         continue
 
-                    if time.time() - self.last_signal_time.get(symbol, 0) < SIGNAL_RATE_LIMIT:
+                    with self._lock:
+                        last_sig = self.last_signal_time.get(symbol, 0)
+                    if time.time() - last_sig < SIGNAL_RATE_LIMIT:
                         continue
-                    self.last_signal_time[symbol] = time.time()
+                    with self._lock:
+                        self.last_signal_time[symbol] = time.time()
                     self.process_signal(signal_data)
 
                 if time.time() - last_summary_time > SUMMARY_INTERVAL:
-                    self.telegram.send_portfolio_summary(self.trader.get_portfolio_summary())
+                    with self._lock:
+                        summary = self.trader.get_portfolio_summary()
+                    self.telegram.send_portfolio_summary(summary)
                     last_summary_time = time.time()
 
-                self.trader.save_state()
+                with self._lock:
+                    self.trader.save_state()
             except Exception as exc:
                 logger.exception("scan loop error: %s", exc)
                 self.telegram.send_error(f"Error in scan loop: {exc}")

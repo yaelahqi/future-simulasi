@@ -14,12 +14,19 @@ from typing import Any
 
 import ccxt
 import pandas as pd
-import pandas_ta_classic as ta
+import pandas_ta_compat as ta
 
 from config import EXCHANGE_ID, RSI_OVERBOUGHT, RSI_OVERSOLD, TIMEFRAME
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
+
+# Stablecoin base symbols to exclude from screening / auto-trading
+STABLECOIN_BASES: set[str] = {
+    "USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "EUR",
+    "USDD", "USDP", "SUSD", "GUSD", "USDe", "USD1", "PYUSD",
+    "AEUR", "EURI", "CUSD", "CEUR",
+}
 
 
 def _make_exchange(exchange_id: str = EXCHANGE_ID):
@@ -42,6 +49,9 @@ class CryptoScreener:
         filtered: list[dict[str, Any]] = []
         for symbol, ticker in tickers.items():
             if not symbol.endswith(f"/{quote}"):
+                continue
+            base = symbol.replace(f"/{quote}", "")
+            if base in STABLECOIN_BASES:
                 continue
             volume_usd = ticker.get("quoteVolume") or 0
             if volume_usd < self.min_volume_usd:

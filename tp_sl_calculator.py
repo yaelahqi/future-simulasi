@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TypedDict
 
-import pandas_ta_classic as ta
+import pandas_ta_compat as ta
 
 logger = logging.getLogger(__name__)
 

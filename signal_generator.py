@@ -14,7 +14,7 @@ from typing import Any
 
 import ccxt
 import pandas as pd
-import pandas_ta_classic as ta
+import pandas_ta_compat as ta
 
 from config import EXCHANGE_ID, RSI_OVERBOUGHT, RSI_OVERSOLD, SYMBOLS, TIMEFRAME
 from tp_sl_calculator import calculate_dynamic_tp_sl
