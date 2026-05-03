@@ -352,7 +352,12 @@ class PaperTrader:
             f.write(json.dumps(log_entry) + '\n')
     
     def save_state(self, filename='paper_trader_state.json'):
-        """Save current state to file"""
+        """Save current state to file.
+
+        Writes to ``filename + '.tmp'`` first and then atomically renames it
+        over the destination, so a process kill mid-write cannot leave a
+        truncated/corrupt JSON file on disk.
+        """
         state = {
             'capital': self.capital,
             'positions': self.positions,
@@ -361,8 +366,23 @@ class PaperTrader:
             'daily_pnl': self.daily_pnl,
             'last_reset_date': self.last_reset_date.isoformat(),
         }
-        with open(filename, 'w') as f:
+        tmp = f"{filename}.tmp"
+        # Ensure parent directory exists when caller passes a path that
+        # includes a directory (default is just a filename in cwd).
+        parent = os.path.dirname(tmp)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(tmp, 'w') as f:
             json.dump(state, f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except (AttributeError, OSError):
+                # fsync may not be available on every platform; the
+                # os.replace() below still gives us atomicity for the
+                # reader's view.
+                pass
+        os.replace(tmp, filename)
 
     def load_state(self, filename='paper_trader_state.json'):
         """Load state from file"""
