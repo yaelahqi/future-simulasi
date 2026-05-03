@@ -30,18 +30,26 @@ class TradingBot:
         self.scan_interval = 120  # 2 minutes (balanced - recommended)
         self.active_symbols = list(SYMBOLS) if not SCREENING_ENABLED else []
         self.trading_enabled = TRADING_ENABLED  # Can be toggled via Telegram
-        
+
         # Re-screening on position close
         self.last_screening_time = 0
         self.screening_cooldown = 300  # 5 minutes between re-screenings
         self.blacklisted_coins = {}  # {symbol: timestamp} - coins to avoid after SL
         self.blacklist_duration = 1800  # 30 minutes blacklist after SL hit
-        
+
         # Telegram command handler (separate thread)
         self.command_interval = 5  # Check commands every 5 seconds
         self.telegram_thread = None
         self.last_update_id = 0  # Track last processed update ID from Telegram
-        
+
+        # Reentrant lock guarding any state shared between the main loop and
+        # the Telegram handler thread (positions, trading_enabled, signal
+        # timers, screening timers, blacklist, active_symbols, etc.). RLock
+        # is reentrant so nested helpers (e.g. process_signal called from
+        # trigger_screening) don't deadlock when invoked from inside an
+        # already-locked region.
+        self._lock = threading.RLock()
+
         # Load previous state if exists
         if self.trader:
             self.trader.load_state()
@@ -96,21 +104,25 @@ class TradingBot:
                 # Handle commands (case-insensitive)
                 cmd = text.lower()
                 
-                if cmd in ['/positions', '/pos']:
-                    if self.trader:
-                        self.telegram.send_positions(self.trader.positions)
-                    else:
-                        self.telegram.send_message("❌ Paper trading not enabled")
+                # Mutations of shared state (positions, trading_enabled,
+                # screening timers, blacklist, etc.) must be serialized with
+                # the main loop, which acquires self._lock around its body.
+                with self._lock:
+                    if cmd in ['/positions', '/pos']:
+                        if self.trader:
+                            self.telegram.send_positions(self.trader.positions)
+                        else:
+                            self.telegram.send_message("❌ Paper trading not enabled")
                 
-                elif cmd in ['/pnl', '/p&l']:
-                    if self.trader:
-                        summary = self.trader.get_portfolio_summary()
-                        self.telegram.send_pnl(summary)
-                    else:
-                        self.telegram.send_message("❌ Paper trading not enabled")
+                    elif cmd in ['/pnl', '/p&l']:
+                        if self.trader:
+                            summary = self.trader.get_portfolio_summary()
+                            self.telegram.send_pnl(summary)
+                        else:
+                            self.telegram.send_message("❌ Paper trading not enabled")
                 
-                elif cmd in ['/start', '/help']:
-                    help_text = """
+                    elif cmd in ['/start', '/help']:
+                        help_text = """
 🤖 *Crypto Trading Bot Commands*
 
 📊 *Portfolio:*
@@ -134,141 +146,153 @@ _Status: {}_
 _Screening: {}_
 _Tracking: {} coin(s)_
 """.format(
-                        '🟢 Trading' if self.trading_enabled else '🔴 Paused',
-                        'Enabled 🔍' if self.screener else 'Disabled ❌',
-                        len(self.active_symbols)
-                    )
-                    self.telegram.send_message(help_text)
-                
-                elif cmd == '/status':
-                    if self.trader:
-                        summary = self.trader.get_portfolio_summary()
-                        self.telegram.send_portfolio_summary(summary)
-                    else:
-                        self.telegram.send_message("❌ Paper trading not enabled")
-                
-                elif cmd == '/pause':
-                    self.trading_enabled = False
-                    self.telegram.send_control_response(
-                        'PAUSE', True,
-                        "Trading paused. No new positions will be opened.\n\nExisting positions will continue to be monitored."
-                    )
-                    print("⏸️ Trading paused")
-                
-                elif cmd == '/resume':
-                    self.trading_enabled = True
-                    self.telegram.send_control_response(
-                        'RESUME', True,
-                        "Trading resumed. Bot will open new positions based on signals."
-                    )
-                    print("▶️ Trading resumed")
-                
-                elif cmd.startswith('/close '):
-                    if not self.trader:
-                        self.telegram.send_message("❌ Paper trading not enabled")
-                        continue
-
-                    parts = text.split(' ', 1)
-                    raw_symbol = parts[1].strip().upper() if len(parts) > 1 else ''
-                    if not raw_symbol:
-                        self.telegram.send_message(
-                            "⚠️ Usage: `/close SYMBOL`  (e.g. `/close SOL`)"
+                            '🟢 Trading' if self.trading_enabled else '🔴 Paused',
+                            'Enabled 🔍' if self.screener else 'Disabled ❌',
+                            len(self.active_symbols)
                         )
-                        continue
-                    if '/' in raw_symbol:
-                        symbol = raw_symbol  # Already a full pair like SOL/USDT
-                    else:
-                        symbol = f"{raw_symbol}/USDT"
+                        self.telegram.send_message(help_text)
+                
+                    elif cmd == '/status':
+                        if self.trader:
+                            summary = self.trader.get_portfolio_summary()
+                            self.telegram.send_portfolio_summary(summary)
+                        else:
+                            self.telegram.send_message("❌ Paper trading not enabled")
+                
+                    elif cmd == '/pause':
+                        self.trading_enabled = False
+                        self.telegram.send_control_response(
+                            'PAUSE', True,
+                            "Trading paused. No new positions will be opened.\n\nExisting positions will continue to be monitored."
+                        )
+                        print("⏸️ Trading paused")
+                
+                    elif cmd == '/resume':
+                        self.trading_enabled = True
+                        self.telegram.send_control_response(
+                            'RESUME', True,
+                            "Trading resumed. Bot will open new positions based on signals."
+                        )
+                        print("▶️ Trading resumed")
+                
+                    elif cmd.startswith('/close '):
+                        if not self.trader:
+                            self.telegram.send_message("❌ Paper trading not enabled")
+                            continue
+
+                        parts = text.split(' ', 1)
+                        raw_symbol = parts[1].strip().upper() if len(parts) > 1 else ''
+                        if not raw_symbol:
+                            self.telegram.send_message(
+                                "⚠️ Usage: `/close SYMBOL`  (e.g. `/close SOL`)"
+                            )
+                            continue
+                        if '/' in raw_symbol:
+                            symbol = raw_symbol  # Already a full pair like SOL/USDT
+                        else:
+                            symbol = f"{raw_symbol}/USDT"
                     
-                    if symbol in self.trader.positions:
-                        # Get current price
-                        try:
-                            ticker = self.signal_gen.exchange.fetch_ticker(symbol)
-                            close_result = self.trader.close_position(symbol, ticker['last'], 'MANUAL')
-                            self.telegram.send_position_closed(close_result)
-                            print(f"✅ Manually closed {symbol}")
-                        except Exception as e:
+                        if symbol in self.trader.positions:
+                            # Get current price
+                            try:
+                                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                                close_result = self.trader.close_position(symbol, ticker['last'], 'MANUAL')
+                                self.telegram.send_position_closed(close_result)
+                                print(f"✅ Manually closed {symbol}")
+                            except Exception as e:
+                                self.telegram.send_control_response(
+                                    'CLOSE', False,
+                                    f"Error closing position: {str(e)}"
+                                )
+                        else:
                             self.telegram.send_control_response(
                                 'CLOSE', False,
-                                f"Error closing position: {str(e)}"
+                                f"No open position for {symbol}"
                             )
-                    else:
-                        self.telegram.send_control_response(
-                            'CLOSE', False,
-                            f"No open position for {symbol}"
-                        )
                 
-                elif cmd == '/closeall':
-                    if not self.trader or not self.trader.positions:
-                        self.telegram.send_control_response(
-                            'CLOSEALL', False,
-                            "No open positions to close"
-                        )
-                    else:
-                        closed_count = 0
-                        for symbol in list(self.trader.positions.keys()):
-                            try:
-                                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
-                                self.trader.close_position(symbol, ticker['last'], 'MANUAL')
-                                closed_count += 1
-                            except Exception as e:
-                                print(f"Error closing {symbol}: {e}")
-                                continue
+                    elif cmd == '/closeall':
+                        if not self.trader or not self.trader.positions:
+                            self.telegram.send_control_response(
+                                'CLOSEALL', False,
+                                "No open positions to close"
+                            )
+                        else:
+                            closed_count = 0
+                            for symbol in list(self.trader.positions.keys()):
+                                try:
+                                    ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                                    self.trader.close_position(symbol, ticker['last'], 'MANUAL')
+                                    closed_count += 1
+                                except Exception as e:
+                                    print(f"Error closing {symbol}: {e}")
+                                    continue
                         
-                        self.telegram.send_control_response(
-                            'CLOSEALL', True,
-                            f"Closed {closed_count} position(s)"
-                        )
-                        print(f"✅ Closed all {closed_count} positions")
+                            self.telegram.send_control_response(
+                                'CLOSEALL', True,
+                                f"Closed {closed_count} position(s)"
+                            )
+                            print(f"✅ Closed all {closed_count} positions")
                 
-                elif cmd == '/reset':
-                    if self.trader:
-                        # Close all positions first
-                        for symbol in list(self.trader.positions.keys()):
-                            try:
-                                ticker = self.signal_gen.exchange.fetch_ticker(symbol)
-                                self.trader.close_position(symbol, ticker['last'], 'RESET')
-                            except Exception as e:
-                                print(f"Error closing {symbol} during reset: {e}")
-                                continue
+                    elif cmd == '/reset':
+                        if self.trader:
+                            # Close all positions first
+                            for symbol in list(self.trader.positions.keys()):
+                                try:
+                                    ticker = self.signal_gen.exchange.fetch_ticker(symbol)
+                                    self.trader.close_position(symbol, ticker['last'], 'RESET')
+                                except Exception as e:
+                                    print(f"Error closing {symbol} during reset: {e}")
+                                    continue
                         
-                        # Reset capital
-                        self.trader.capital = self.trader.initial_capital
-                        self.trader.daily_pnl = 0.0
-                        self.trader.save_state()
+                            # Reset capital
+                            self.trader.capital = self.trader.initial_capital
+                            self.trader.daily_pnl = 0.0
+                            self.trader.save_state()
                         
-                        self.telegram.send_control_response(
-                            'RESET', True,
-                            f"Capital reset to ${self.trader.initial_capital:.2f}\n\nAll positions closed."
-                        )
-                        print(f"🔄 Capital reset to ${self.trader.initial_capital:.2f}")
-                    else:
-                        self.telegram.send_message("❌ Paper trading not enabled")
+                            self.telegram.send_control_response(
+                                'RESET', True,
+                                f"Capital reset to ${self.trader.initial_capital:.2f}\n\nAll positions closed."
+                            )
+                            print(f"🔄 Capital reset to ${self.trader.initial_capital:.2f}")
+                        else:
+                            self.telegram.send_message("❌ Paper trading not enabled")
                 
-                elif cmd == '/screen':
-                    if self.screener and SCREENING_ENABLED:
-                        self.telegram.send_message("🔍 Running manual screening...")
-                        top_picks = self.screener.get_top_picks(limit=10, min_score=1)
-                        self.send_screening_results(top_picks)
-                        self.last_screening_time = time.time()  # Update cooldown
-                    else:
-                        self.telegram.send_message("❌ Screening not enabled")
+                    elif cmd == '/screen':
+                        if self.screener and SCREENING_ENABLED:
+                            self.telegram.send_message("🔍 Running manual screening...")
+                            top_picks = self.screener.get_top_picks(limit=10, min_score=1)
+                            self.send_screening_results(top_picks)
+                            self.last_screening_time = time.time()  # Update cooldown
+                        else:
+                            self.telegram.send_message("❌ Screening not enabled")
                 
         except Exception as e:
             print(f"Error handling commands: {e}")
     
     def process_signal(self, signal_data):
-        """Process trading signal and execute if needed"""
+        """Process trading signal and execute if needed.
+
+        Caller is expected to hold self._lock. The function still functions
+        correctly without it (RLock is reentrant), but concurrent callers
+        would race on self.trader.positions.
+        """
         symbol = signal_data['symbol']
         signal_type = signal_data['signal']
-        
+
         # Send signal to Telegram
         self.telegram.send_signal(signal_data)
-        
+
         # Skip if HOLD, ERROR, or not actionable
         if signal_type not in ['BUY', 'STRONG_BUY', 'SELL']:
             return
-        
+
+        # Honour the /pause toggle: keep sending signal alerts so the user
+        # can see what would have been entered, but do not open a new
+        # position. Existing positions still trail / hit TP/SL.
+        if not self.trading_enabled:
+            print(f"⏸️ Trading paused, skipping entry for {symbol}")
+            return
+
         # Check if we already have a position
         if self.trader:
             if symbol in self.trader.positions:
@@ -393,19 +417,26 @@ Price: ${signal_data['price']:.4f}
     
     def can_trigger_screening(self):
         """Check if we can trigger re-screening (cooldown + slots available)"""
+        # Without a paper trader there is no position state to make
+        # re-screening meaningful.
+        if not self.trader:
+            return False, "Paper trading disabled"
+
         # Check if slots available
         if len(self.trader.positions) >= self.trader.max_positions:
             return False, "Max positions reached"
-        
+
         # Check cooldown
         if time.time() - self.last_screening_time < self.screening_cooldown:
             remaining = int(self.screening_cooldown - (time.time() - self.last_screening_time))
             return False, f"Cooldown: {remaining}s remaining"
-        
+
         return True, "OK"
-    
+
     def trigger_screening(self, reason="Position closed"):
         """Trigger re-screening when position closes"""
+        if not self.trader:
+            return
         can_trigger, reason = self.can_trigger_screening()
         
         if not can_trigger:
@@ -539,61 +570,68 @@ Monitoring markets...
         
         while self.running:
             try:
-                # Run market screening if enabled
-                if self.screener and time.time() - last_screening_time > screening_interval:
-                    print(f"\n🔍 Running market screener...")
-                    top_picks = self.screener.get_top_picks(limit=TOP_N_COINS, min_score=1)
-                    
-                    if top_picks:
-                        self.active_symbols = [p['symbol'] for p in top_picks]
-                        print(f"✅ Selected {len(self.active_symbols)} coins: {', '.join(self.active_symbols)}")
-                        
-                        # Reset rate limit for ALL active coins (allow immediate scan after screening)
-                        for symbol in self.active_symbols:
-                            self.last_signal_time[symbol] = 0
-                        print(f"  🔄 Rate limits reset for all active coins")
-                        
-                        # Send screening results to Telegram
-                        self.send_screening_results(top_picks)
-                    
-                    last_screening_time = time.time()
-                    self.last_screening_time = time.time()  # Track for re-screening cooldown
-                
-                # Scan for signals on active symbols
-                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(self.active_symbols)} coins...")
-                
-                for symbol in self.active_symbols:
-                    signal_data = self.signal_gen.generate_signal(symbol)
-                    print(f"  {signal_data['symbol']}: {signal_data['signal']} @ ${signal_data.get('price', 0):.2f}")
-                    
-                    # Skip if already have position (avoid re-entry)
-                    if symbol in self.trader.positions:
-                        print(f"    ⚠️ Already have position, skipping")
-                        continue
-                    
-                    # Rate limit: Only process signal every 5 min (was 15 min)
-                    last_time = self.last_signal_time.get(symbol, 0)
-                    if time.time() - last_time < 300:  # 5 minutes
-                        continue
-                    
-                    self.last_signal_time[symbol] = time.time()
-                    self.process_signal(signal_data)
-                
-                # Check open positions (includes trailing stop updates)
-                self.check_open_positions()
-                
-                # Send periodic summary
-                if time.time() - last_summary_time > summary_interval:
-                    self.send_summary()
-                    last_summary_time = time.time()
-                
-                # Save state
-                if self.trader:
-                    self.trader.save_state()
-                
+                # All shared state mutations during one iteration are
+                # serialized with the Telegram handler. The sleep is left
+                # OUTSIDE the lock so commands can be processed promptly
+                # between scans.
+                with self._lock:
+                    # Run market screening if enabled
+                    if self.screener and time.time() - last_screening_time > screening_interval:
+                        print(f"\n🔍 Running market screener...")
+                        top_picks = self.screener.get_top_picks(limit=TOP_N_COINS, min_score=1)
+
+                        if top_picks:
+                            self.active_symbols = [p['symbol'] for p in top_picks]
+                            print(f"✅ Selected {len(self.active_symbols)} coins: {', '.join(self.active_symbols)}")
+
+                            # Reset rate limit for ALL active coins (allow immediate scan after screening)
+                            for symbol in self.active_symbols:
+                                self.last_signal_time[symbol] = 0
+                            print(f"  🔄 Rate limits reset for all active coins")
+
+                            # Send screening results to Telegram
+                            self.send_screening_results(top_picks)
+
+                        last_screening_time = time.time()
+                        self.last_screening_time = time.time()  # Track for re-screening cooldown
+
+                    # Scan for signals on active symbols
+                    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(self.active_symbols)} coins...")
+
+                    for symbol in self.active_symbols:
+                        signal_data = self.signal_gen.generate_signal(symbol)
+                        print(f"  {signal_data['symbol']}: {signal_data['signal']} @ ${signal_data.get('price', 0):.2f}")
+
+                        # Skip if already have position (avoid re-entry).
+                        # Guard self.trader because PAPER_TRADING=false leaves
+                        # it as None.
+                        if self.trader and symbol in self.trader.positions:
+                            print(f"    ⚠️ Already have position, skipping")
+                            continue
+
+                        # Rate limit: Only process signal every 5 min (was 15 min)
+                        last_time = self.last_signal_time.get(symbol, 0)
+                        if time.time() - last_time < 300:  # 5 minutes
+                            continue
+
+                        self.last_signal_time[symbol] = time.time()
+                        self.process_signal(signal_data)
+
+                    # Check open positions (includes trailing stop updates)
+                    self.check_open_positions()
+
+                    # Send periodic summary
+                    if time.time() - last_summary_time > summary_interval:
+                        self.send_summary()
+                        last_summary_time = time.time()
+
+                    # Save state
+                    if self.trader:
+                        self.trader.save_state()
+
                 # Telegram commands handled in separate thread (no need to call here)
-                
-                # Wait for next scan
+
+                # Wait for next scan (lock released so commands can run)
                 time.sleep(self.scan_interval)
                 
             except Exception as e:
