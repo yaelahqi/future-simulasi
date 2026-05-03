@@ -77,16 +77,16 @@ class SignalGenerator:
         df["vol_sma"] = ta.sma(df["volume"], length=20)
         return df
 
-    def generate_signal(self, symbol: str) -> dict[str, Any]:
-        df = self.fetch_ohlcv(symbol)
-        if df is None:
-            return {"symbol": symbol, "signal": "ERROR", "reason": "No data"}
+    def evaluate_dataframe(self, df: pd.DataFrame, symbol: str = "") -> dict[str, Any]:
+        """Pure-dataframe signal evaluation.
 
-        df = self.calculate_indicators(df)
-        if df is None:
+        Reads indicators from ``df.iloc[-1]`` and ``df.iloc[-2]`` (assumed to
+        be closed candles already). Used by ``generate_signal`` for live and
+        by the backtest engine for replay.
+        """
+        if df is None or len(df) < 2:
             return {"symbol": symbol, "signal": "ERROR", "reason": "Insufficient data"}
 
-        # Use closed candles for both "latest" and "previous" indicator reads.
         latest = df.iloc[-1]
         prev = df.iloc[-2]
 
@@ -131,26 +131,49 @@ class SignalGenerator:
         else:
             signal = "HOLD"
 
-        levels = calculate_dynamic_tp_sl(df, float(latest["close"]), signal)
+        return _build_signal_dict(symbol, signal, latest, df, reasons, confidence)
 
-        return {
-            "symbol": symbol,
-            "signal": signal,
-            "price": float(latest["close"]),
-            "rsi": float(latest["rsi"]),
-            "macd": float(latest.get("macd", 0.0) or 0.0),
-            "confidence": int(confidence),
-            "reasons": reasons,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "tp": levels["tp"],
-            "sl": levels["sl"],
-            "rr_ratio": levels["rr_ratio"],
-            "tp_pct": levels["tp_pct"],
-            "sl_pct": levels["sl_pct"],
-        }
+    def generate_signal(self, symbol: str) -> dict[str, Any]:
+        df = self.fetch_ohlcv(symbol)
+        if df is None:
+            return {"symbol": symbol, "signal": "ERROR", "reason": "No data"}
+
+        df = self.calculate_indicators(df)
+        if df is None:
+            return {"symbol": symbol, "signal": "ERROR", "reason": "Insufficient data"}
+
+        return self.evaluate_dataframe(df, symbol)
 
     def scan_all_symbols(self) -> list[dict[str, Any]]:
         return [self.generate_signal(symbol) for symbol in SYMBOLS]
+
+
+def _build_signal_dict(
+    symbol: str,
+    signal: str,
+    latest: pd.Series,
+    df: pd.DataFrame,
+    reasons: list[str],
+    confidence: int,
+) -> dict[str, Any]:
+    """Compose the standard signal payload, including dynamic TP/SL."""
+    price = float(latest["close"])
+    levels = calculate_dynamic_tp_sl(df, price, signal)
+    return {
+        "symbol": symbol,
+        "signal": signal,
+        "price": price,
+        "rsi": float(latest["rsi"]),
+        "macd": float(latest.get("macd", 0.0) or 0.0),
+        "confidence": int(confidence),
+        "reasons": reasons,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "tp": levels["tp"],
+        "sl": levels["sl"],
+        "rr_ratio": levels["rr_ratio"],
+        "tp_pct": levels["tp_pct"],
+        "sl_pct": levels["sl_pct"],
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover
