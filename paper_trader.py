@@ -15,6 +15,12 @@ from config import (
 
 
 class PaperTrader:
+    # When current_price has moved more than this fraction beyond the
+    # SL/TP level, we treat it as a price gap and log a warning. In real
+    # trading the actual fill would slip even further; we keep the fill
+    # at current_price for the simulation but surface the issue.
+    GAP_WARN_THRESHOLD = 0.005  # 0.5%
+
     def __init__(self):
         self.initial_capital = INITIAL_CAPITAL
         self.capital = INITIAL_CAPITAL
@@ -215,18 +221,25 @@ class PaperTrader:
         """
         if symbol not in self.positions:
             return {'error': 'No open position'}
-        
+
         position = self.positions[symbol]
-        
-        # Calculate PnL
+
+        # Calculate raw PnL
         if position['type'] == 'BUY':
             pnl = (exit_price - position['entry_price']) * position['quantity']
         else:  # SELL
             pnl = (position['entry_price'] - exit_price) * position['quantity']
-        
-        # Compute PnL relative to the position's margin (return on margin),
-        # not total portfolio capital. Guard against division by zero.
+
+        # Liquidation cap: in real futures trading, losses are capped at the
+        # margin posted for the position (the rest gets liquidated by the
+        # exchange). Without this cap, a leveraged loss can drive
+        # self.capital negative which corrupts subsequent risk checks.
         margin_basis = position.get('margin') or (position.get('size_usd', 0) / max(self.leverage, 1)) or 1
+        liquidated = False
+        if pnl < -margin_basis:
+            liquidated = True
+            pnl = -margin_basis
+
         pnl_pct = (pnl / margin_basis) * 100
         
         # Update capital (release margin + PnL)
@@ -246,7 +259,8 @@ class PaperTrader:
             'exit_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'pnl': pnl,
             'pnl_pct': pnl_pct,
-            'close_reason': reason,
+            'close_reason': 'LIQUIDATED' if liquidated else reason,
+            'liquidated': liquidated,
             'status': 'CLOSED'
         }
         
@@ -267,30 +281,49 @@ class PaperTrader:
         Returns: list of closed positions
         """
         closed = []
-        
+
         for symbol, position in list(self.positions.items()):
             if symbol not in current_prices:
                 continue
-            
+
             current_price = current_prices[symbol]
-            
+
             # Check take profit
             if position['type'] == 'BUY':
                 if current_price >= position['take_profit']:
+                    self._warn_if_gapped(symbol, position['take_profit'], current_price, 'TP', 'BUY')
                     result = self.close_position(symbol, current_price, 'TAKE_PROFIT')
                     closed.append(result)
                 elif current_price <= position['stop_loss']:
+                    self._warn_if_gapped(symbol, position['stop_loss'], current_price, 'SL', 'BUY')
                     result = self.close_position(symbol, current_price, 'STOP_LOSS')
                     closed.append(result)
             else:  # SELL
                 if current_price <= position['take_profit']:
+                    self._warn_if_gapped(symbol, position['take_profit'], current_price, 'TP', 'SELL')
                     result = self.close_position(symbol, current_price, 'TAKE_PROFIT')
                     closed.append(result)
                 elif current_price >= position['stop_loss']:
+                    self._warn_if_gapped(symbol, position['stop_loss'], current_price, 'SL', 'SELL')
                     result = self.close_position(symbol, current_price, 'STOP_LOSS')
                     closed.append(result)
-        
+
         return closed
+
+    def _warn_if_gapped(self, symbol, level_price, current_price, level_type, side):
+        """Print a warning when current_price is significantly past the level."""
+        if level_price <= 0:
+            return
+        # For BUY/SL and SELL/TP, current_price < level_price (overshoot down).
+        # For BUY/TP and SELL/SL, current_price > level_price (overshoot up).
+        diff = abs(current_price - level_price) / level_price
+        if diff >= self.GAP_WARN_THRESHOLD:
+            print(
+                f"⚠️  Gap fill warning for {symbol} {side} {level_type}: "
+                f"level=${level_price:.4f}, fill=${current_price:.4f} "
+                f"({diff * 100:.2f}% beyond level). In live trading the actual "
+                f"fill would likely be worse than the level price."
+            )
     
     def get_portfolio_summary(self):
         """Get current portfolio summary"""

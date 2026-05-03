@@ -167,12 +167,18 @@ _Tracking: {} coin(s)_
                     if not self.trader:
                         self.telegram.send_message("❌ Paper trading not enabled")
                         continue
-                    
-                    symbol = text.split(' ', 1)[1].strip().upper()
-                    if '/' in symbol:
-                        symbol = symbol  # Already has USDT
+
+                    parts = text.split(' ', 1)
+                    raw_symbol = parts[1].strip().upper() if len(parts) > 1 else ''
+                    if not raw_symbol:
+                        self.telegram.send_message(
+                            "⚠️ Usage: `/close SYMBOL`  (e.g. `/close SOL`)"
+                        )
+                        continue
+                    if '/' in raw_symbol:
+                        symbol = raw_symbol  # Already a full pair like SOL/USDT
                     else:
-                        symbol = f"{symbol}/USDT"
+                        symbol = f"{raw_symbol}/USDT"
                     
                     if symbol in self.trader.positions:
                         # Get current price
@@ -205,7 +211,8 @@ _Tracking: {} coin(s)_
                                 ticker = self.signal_gen.exchange.fetch_ticker(symbol)
                                 self.trader.close_position(symbol, ticker['last'], 'MANUAL')
                                 closed_count += 1
-                            except:
+                            except Exception as e:
+                                print(f"Error closing {symbol}: {e}")
                                 continue
                         
                         self.telegram.send_control_response(
@@ -221,7 +228,8 @@ _Tracking: {} coin(s)_
                             try:
                                 ticker = self.signal_gen.exchange.fetch_ticker(symbol)
                                 self.trader.close_position(symbol, ticker['last'], 'RESET')
-                            except:
+                            except Exception as e:
+                                print(f"Error closing {symbol} during reset: {e}")
                                 continue
                         
                         # Reset capital
