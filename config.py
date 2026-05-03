@@ -71,7 +71,7 @@ SCREENING_COOLDOWN = int(os.getenv("SCREENING_COOLDOWN", "300"))  # cooldown bet
 SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "3600"))  # periodic summary
 BLACKLIST_DURATION = int(os.getenv("BLACKLIST_DURATION", "1800"))  # 30 min after SL
 COMMAND_INTERVAL = int(os.getenv("COMMAND_INTERVAL", "5"))
-SIGNAL_RATE_LIMIT = int(os.getenv("SIGNAL_RATE_LIMIT", "300"))  # min seconds between signals/symbol
+SIGNAL_RATE_LIMIT = int(os.getenv("SIGNAL_RATE_LIMIT", "1800"))  # 30 min between signals/symbol
 
 # Network
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "15"))  # seconds for requests calls

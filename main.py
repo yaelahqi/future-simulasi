@@ -365,6 +365,20 @@ class TradingBot:
             logger.debug("Skipping stablecoin signal: %s", symbol)
             return
 
+        # Silent reject: low confidence signals (only STRONG_BUY / strong SELL).
+        confidence = signal_data.get("confidence", 0)
+        if abs(confidence) < 3:
+            logger.debug("Low confidence (%d) for %s, silently skipping", confidence, symbol)
+            return
+
+        # Silent reject: don't spam signals when max positions reached.
+        with self._lock:
+            max_pos_reached = len(self.trader.positions) >= self.trader.max_positions
+        if max_pos_reached and signal_type in {"BUY", "STRONG_BUY", "SELL"}:
+            logger.debug("Max positions reached (%d/%d), silently skipping %s %s",
+                         len(self.trader.positions), self.trader.max_positions, symbol, signal_type)
+            return
+
         # Notify on actionable signals only to avoid spam on HOLDs.
         if signal_type in {"BUY", "STRONG_BUY", "SELL"}:
             self.telegram.send_signal(signal_data)
