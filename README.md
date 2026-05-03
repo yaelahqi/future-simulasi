@@ -7,7 +7,7 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 - 📊 **Technical Analysis** — RSI, MACD, Moving Averages, Bollinger Bands, Volume (computed on **closed** candles, not the still-forming bar)
 - 📱 **Telegram Alerts** — Real-time signal notifications with HTML escaping
 - 📝 **Paper Trading** — Risk-free simulation with **realistic taker fee, slippage, and isolated-margin liquidation**
-- 🔄 **Auto Execution** — Long-only entries triggered by signals
+- 🔄 **Auto Execution** — long & short entries triggered by signals
 - 📈 **Portfolio Tracking** — PnL, win rate, trade history (persisted across restarts)
 - 🔍 **Market Screener** — Auto-scan and select best coins by volume + signal score
 - 🚀 **Compounding** — Position size scales with TOTAL equity (winning trades grow the per-trade base)
@@ -164,7 +164,7 @@ Confidence is the sum of contributions from each indicator (`+1` bullish / `-1` 
 **STRONG_BUY** — confidence `≥ 3` (used for the most aggressive entries)
 **BUY** — confidence `2`
 **HOLD** — confidence in `[-1, +1]`
-**SELL** — confidence `≤ -2` (logged but **not acted on** — bot is long-only)
+**SELL** — confidence `≤ -2`, opens a **SHORT** with mirrored TP/SL/liquidation/trailing logic
 
 Indicators considered:
 - RSI < 30 oversold (`+1`) / RSI > 70 overbought (`-1`)
@@ -179,7 +179,27 @@ Indicators considered:
 | `TAKER_FEE_PCT` | 0.04 | Taker fee per fill, % (Binance USDT-M default) |
 | `SLIPPAGE_BPS` | 2.0 | Slippage in basis points applied on each fill |
 
-Liquidation is approximated as `entry × (1 − 1/leverage + 0.005)` for longs (isolated margin, ~0.5% maintenance buffer). Stop-loss is automatically tightened above the liquidation price at order-open time.
+Liquidation is approximated for both directions with a ~0.5% maintenance buffer:
+- LONG: `entry × (1 − 1/leverage + 0.005)` — price drops to liquidate.
+- SHORT: `entry × (1 + 1/leverage − 0.005)` — price rises to liquidate.
+
+Stop-loss is automatically tightened *inside* the liquidation price at order-open time, so SL fires before liquidation regardless of direction.
+
+### Long & Short
+
+`BUY` / `STRONG_BUY` open a LONG; `SELL` opens a SHORT. Both sides use the same order-execution path, with mirrored TP/SL/liquidation/trailing logic:
+
+| Aspect | LONG (`BUY`) | SHORT (`SELL`) |
+|---|---|---|
+| Profit when | price rises | price falls |
+| TP | above entry | below entry |
+| SL | below entry | above entry |
+| Liquidation | below entry | above entry |
+| Entry slippage | adds to price | subtracts from price |
+| Exit slippage | subtracts | adds |
+| Trailing stop | ratchets **up** (tighter) | ratchets **down** (tighter) |
+| Intra-candle SL trigger | candle `low ≤ SL` | candle `high ≥ SL` |
+| Intra-candle TP trigger | candle `high ≥ TP` | candle `low ≤ TP` |
 
 ## 📊 Project Structure
 

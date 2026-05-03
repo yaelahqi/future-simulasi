@@ -329,9 +329,7 @@ class TradingBot:
             logger.debug("Trading disabled, not opening %s", symbol)
             return
 
-        if signal_type not in {"BUY", "STRONG_BUY"}:
-            if signal_type == "SELL":
-                logger.info("SELL signal for %s ignored (long-only)", symbol)
+        if signal_type not in {"BUY", "STRONG_BUY", "SELL"}:
             return
 
         if symbol in self.trader.positions:
@@ -354,7 +352,7 @@ class TradingBot:
             rr = signal_data.get("rr_ratio")
 
         position = self.trader.open_position(
-            symbol, current_price, "BUY", tp=tp, sl=sl, rr_ratio=rr,
+            symbol, current_price, signal_type, tp=tp, sl=sl, rr_ratio=rr,
         )
 
         if "error" in position:

@@ -118,7 +118,7 @@ def calculate_dynamic_tp_sl(df, current_price: float, signal_type: str = "BUY") 
                 # from the *final* tp/sl rather than hardcoded.
             return _round_levels(tp, sl, current_price, True)
 
-        # bearish branch (kept for completeness; bot is LONG-only)
+        # Bearish branch — used by SHORT entries.
         tp_candidates = [x for x in (recent_low, bb_lower) if x < current_price]
         tp = max(tp_candidates) if tp_candidates else current_price - (atr_val * 2)
 

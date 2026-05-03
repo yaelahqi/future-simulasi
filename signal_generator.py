@@ -120,7 +120,7 @@ class SignalGenerator:
             confidence += 1
 
         # Confidence thresholds:
-        # >= 3: STRONG_BUY, == 2: BUY, <= -2: SELL (long-only bot ignores SELL),
+        # >= 3: STRONG_BUY, == 2: BUY, <= -2: SELL (executed as SHORT),
         # otherwise HOLD.
         if confidence >= 3:
             signal = "STRONG_BUY"

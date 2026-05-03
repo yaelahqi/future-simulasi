@@ -46,7 +46,7 @@ def _utc_today():
 @dataclass
 class Position:
     symbol: str
-    type: str  # "BUY" only for now (LONG-only bot)
+    type: str  # "BUY" = LONG, "SELL" = SHORT
     entry_price: float
     quantity: float
     size_usd: float
@@ -92,16 +92,38 @@ class Position:
         )
 
 
+_MAINT_MARGIN_BUFFER = 0.005  # 0.5%, slightly inside the broker maintenance band
+
+
 def _liquidation_price_long(entry: float, leverage: int) -> float:
     """Approx isolated-margin liquidation for a LONG.
 
-    Maintenance margin ~0.5% (Binance USDT-M tiered, ignored). With pure
+    Maintenance margin ~0.5% (Binance USDT-M tiered, simplified). With pure
     isolated margin this is roughly when loss == margin: entry * (1 - 1/lev).
+    The buffer makes us liquidate slightly *earlier* than pure margin loss.
     """
     if leverage <= 0:
         return 0.0
-    # Slightly conservative buffer for maintenance margin (0.5%).
-    return entry * (1 - (1 / leverage) + 0.005)
+    return entry * (1 - (1 / leverage) + _MAINT_MARGIN_BUFFER)
+
+
+def _liquidation_price_short(entry: float, leverage: int) -> float:
+    """Approx isolated-margin liquidation for a SHORT.
+
+    Symmetric to LONG but on the upside: as price rises against a short,
+    margin is consumed; liquidation roughly at entry * (1 + 1/lev). Buffer
+    pulls it slightly down so liquidation triggers a touch before pure
+    margin exhaustion (matches conservative venue behavior).
+    """
+    if leverage <= 0:
+        return 0.0
+    return entry * (1 + (1 / leverage) - _MAINT_MARGIN_BUFFER)
+
+
+def _liquidation_price(entry: float, leverage: int, position_type: str) -> float:
+    if position_type == "SELL":
+        return _liquidation_price_short(entry, leverage)
+    return _liquidation_price_long(entry, leverage)
 
 
 def _apply_slippage(price: float, side: str) -> float:
@@ -119,7 +141,7 @@ def _fee(notional: float) -> float:
 
 
 class PaperTrader:
-    """Thread-safe paper trading engine for LONG-only futures positions."""
+    """Thread-safe paper trading engine for long/short futures positions."""
 
     def __init__(self) -> None:
         self.initial_capital: float = INITIAL_CAPITAL
@@ -191,10 +213,18 @@ class PaperTrader:
         rr_ratio: float | None = None,
     ) -> dict[str, Any]:
         """Open a paper position. Returns position dict or {'error': ...}."""
-        if signal_type != "BUY":
+        # Normalize signal -> position direction.
+        # BUY/STRONG_BUY -> LONG ("BUY"); SELL -> SHORT ("SELL").
+        if signal_type in {"BUY", "STRONG_BUY"}:
+            position_type = "BUY"
+            is_short = False
+        elif signal_type == "SELL":
+            position_type = "SELL"
+            is_short = True
+        else:
             return {
                 "error": "UNSUPPORTED_SIGNAL",
-                "message": f"Bot is LONG-only; got '{signal_type}'",
+                "message": f"Unsupported signal type '{signal_type}'",
                 "symbol": symbol,
                 "signal": signal_type,
             }
@@ -226,7 +256,9 @@ class PaperTrader:
                     "signal": signal_type,
                 }
 
-            fill_price = _apply_slippage(entry_price, "buy")
+            # Entry slippage: longs cross the ask (buy), shorts cross the bid (sell).
+            entry_side = "sell" if is_short else "buy"
+            fill_price = _apply_slippage(entry_price, entry_side)
             position_size = margin_required * self.leverage
             quantity = position_size / fill_price
             entry_fee = _fee(position_size)
@@ -239,18 +271,28 @@ class PaperTrader:
                 stop_loss = float(sl)
                 is_dynamic = True
             else:
-                take_profit = fill_price * (1 + TAKE_PROFIT_PCT / 100)
-                stop_loss = fill_price * (1 - STOP_LOSS_PCT / 100)
+                if is_short:
+                    take_profit = fill_price * (1 - TAKE_PROFIT_PCT / 100)
+                    stop_loss = fill_price * (1 + STOP_LOSS_PCT / 100)
+                else:
+                    take_profit = fill_price * (1 + TAKE_PROFIT_PCT / 100)
+                    stop_loss = fill_price * (1 - STOP_LOSS_PCT / 100)
                 is_dynamic = False
 
-            liq_price = _liquidation_price_long(fill_price, self.leverage)
-            # Ensure SL never sits below liquidation: we'd be stopped before SL.
-            if stop_loss <= liq_price:
-                stop_loss = liq_price * 1.001
+            liq_price = _liquidation_price(fill_price, self.leverage, position_type)
+            # Ensure SL is hit before liquidation:
+            #   LONG -> SL above liq;
+            #   SHORT -> SL below liq.
+            if is_short:
+                if stop_loss >= liq_price > 0:
+                    stop_loss = liq_price * 0.999
+            else:
+                if 0 < liq_price and stop_loss <= liq_price:
+                    stop_loss = liq_price * 1.001
 
             position = Position(
                 symbol=symbol,
-                type="BUY",
+                type=position_type,
                 entry_price=fill_price,
                 quantity=quantity,
                 size_usd=position_size,
@@ -271,22 +313,40 @@ class PaperTrader:
             return position.to_dict()
 
     def update_trailing_stop(self, symbol: str, current_price: float) -> dict[str, Any] | None:
-        """Trail the stop loss for a profitable LONG position."""
+        """Ratchet-only trailing stop. LONG tightens upward, SHORT downward."""
         with self._lock:
             position = self.positions.get(symbol)
-            if position is None or position.type != "BUY":
-                return None
-            if current_price <= position.entry_price:
+            if position is None:
                 return None
 
-            profit_pct = (current_price - position.entry_price) / position.entry_price
+            entry = position.entry_price
+            if entry <= 0:
+                return None
+
             new_sl: float | None = None
-            if profit_pct >= 0.05:
-                new_sl = current_price * 0.98  # 2% trailing
-            elif profit_pct >= 0.03:
-                new_sl = position.entry_price * 1.001  # breakeven + tiny buffer
-
-            if new_sl is None or new_sl <= position.stop_loss:
+            if position.type == "BUY":
+                # Profit only when price moved above entry.
+                if current_price <= entry:
+                    return None
+                profit_pct = (current_price - entry) / entry
+                if profit_pct >= 0.05:
+                    new_sl = current_price * 0.98  # 2% below current price
+                elif profit_pct >= 0.03:
+                    new_sl = entry * 1.001  # breakeven + tiny buffer
+                if new_sl is None or new_sl <= position.stop_loss:
+                    return None
+            elif position.type == "SELL":
+                # Profit only when price moved below entry.
+                if current_price >= entry:
+                    return None
+                profit_pct = (entry - current_price) / entry
+                if profit_pct >= 0.05:
+                    new_sl = current_price * 1.02  # 2% above current price
+                elif profit_pct >= 0.03:
+                    new_sl = entry * 0.999  # breakeven - tiny buffer
+                if new_sl is None or new_sl >= position.stop_loss:
+                    return None
+            else:
                 return None
 
             old_sl = position.stop_loss
@@ -305,12 +365,14 @@ class PaperTrader:
             # don't carry stale daily totals across days.
             self._reset_daily_stats_locked()
 
-            # Apply exit-side slippage (LONG exit = sell). Liquidation/SL fills
-            # are simulated at the trigger price *with* slippage already applied
-            # by check_positions; here we still pay the slippage cost.
-            fill_price = _apply_slippage(exit_price, "sell")
+            # Exit slippage: LONG exit = sell, SHORT exit = buy back.
+            exit_side = "buy" if position.type == "SELL" else "sell"
+            fill_price = _apply_slippage(exit_price, exit_side)
 
-            pnl = (fill_price - position.entry_price) * position.quantity
+            if position.type == "SELL":
+                pnl = (position.entry_price - fill_price) * position.quantity
+            else:
+                pnl = (fill_price - position.entry_price) * position.quantity
             exit_fee = _fee(position.size_usd)
             net_pnl = pnl - exit_fee
 
@@ -367,6 +429,21 @@ class PaperTrader:
                         closed.append(result)
                         continue
                     if high >= position.take_profit:
+                        result = self.close_position(symbol, position.take_profit, "TAKE_PROFIT")
+                        closed.append(result)
+                        continue
+                elif position.type == "SELL":
+                    # SHORT mirrors LONG but on the opposite side: losses on the
+                    # high (price rises against us), profit on the low.
+                    if position.liquidation_price > 0 and high >= position.liquidation_price:
+                        result = self.close_position(symbol, position.liquidation_price, "LIQUIDATION")
+                        closed.append(result)
+                        continue
+                    if high >= position.stop_loss:
+                        result = self.close_position(symbol, position.stop_loss, "STOP_LOSS")
+                        closed.append(result)
+                        continue
+                    if low <= position.take_profit:
                         result = self.close_position(symbol, position.take_profit, "TAKE_PROFIT")
                         closed.append(result)
                         continue

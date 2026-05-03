@@ -21,8 +21,97 @@ def test_open_and_close_long_no_fees(fresh_trader):
     assert "BTC/USDT" not in fresh_trader.positions
 
 
-def test_short_signal_is_rejected(fresh_trader):
-    result = fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+def test_open_and_close_short_no_fees(fresh_trader):
+    """Mirror of the LONG happy path. SHORT profits when price drops."""
+    pos = fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+    assert "error" not in pos
+    assert pos["type"] == "SELL"
+    assert pos["leverage"] == 10
+    # Default fallback: TP below entry, SL above entry.
+    assert pos["take_profit"] < pos["entry_price"]
+    assert pos["stop_loss"] > pos["entry_price"]
+    # Liquidation must be ABOVE entry for shorts.
+    assert pos["liquidation_price"] > pos["entry_price"]
+
+    # Price drops 5% — short PnL is positive, on margin ~50% return at 10x.
+    closed = fresh_trader.close_position("BTC/USDT", exit_price=95.0, reason="MANUAL")
+    assert closed["pnl"] > 0
+    assert closed["pnl_pct"] > 40
+    assert "BTC/USDT" not in fresh_trader.positions
+
+
+def test_short_uses_inverted_liquidation(fresh_trader):
+    """SHORT liq must be on the upside (entry * (1 + 1/L - buffer))."""
+    pos = fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+    # 10x leverage, 0.5% buffer -> liq ~= entry * 1.095
+    expected = 100.0 * (1 + 1 / 10 - 0.005)
+    # Allow some slack for entry-side slippage applied to fill_price.
+    assert abs(pos["liquidation_price"] - expected) / expected < 0.01
+
+
+def test_short_check_positions_uses_high_sl(fresh_trader):
+    """For SHORTs, candle HIGH must trigger SL even if last < SL."""
+    fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+    pos = fresh_trader.positions["BTC/USDT"]
+    sl = pos.stop_loss
+    closed = fresh_trader.check_positions({
+        "BTC/USDT": {"high": sl + 0.5, "low": 99.0, "last": 100.2},
+    })
+    assert len(closed) == 1
+    assert closed[0]["close_reason"] == "STOP_LOSS"
+
+
+def test_short_check_positions_uses_low_tp(fresh_trader):
+    """For SHORTs, candle LOW must trigger TP even if last > TP."""
+    fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+    pos = fresh_trader.positions["BTC/USDT"]
+    tp = pos.take_profit
+    closed = fresh_trader.check_positions({
+        "BTC/USDT": {"high": 100.5, "low": tp - 0.5, "last": 99.8},
+    })
+    assert len(closed) == 1
+    assert closed[0]["close_reason"] == "TAKE_PROFIT"
+
+
+def test_short_trailing_stop_only_moves_down(fresh_trader):
+    fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="SELL")
+    pos = fresh_trader.positions["BTC/USDT"]
+    initial_sl = pos.stop_loss
+
+    # Price up against us: no trailing.
+    update = fresh_trader.update_trailing_stop("BTC/USDT", current_price=101.0)
+    assert update is None
+    assert fresh_trader.positions["BTC/USDT"].stop_loss == initial_sl
+
+    # 5% in our favour (price down): SL should move *down* toward current price.
+    update = fresh_trader.update_trailing_stop("BTC/USDT", current_price=95.0)
+    assert update is not None
+    assert update["new_sl"] < initial_sl
+
+    # Price reverses up to 97: trailing must NOT loosen (move up).
+    new_sl = fresh_trader.positions["BTC/USDT"].stop_loss
+    update = fresh_trader.update_trailing_stop("BTC/USDT", current_price=97.0)
+    assert update is None
+    assert fresh_trader.positions["BTC/USDT"].stop_loss == new_sl
+
+
+def test_long_and_short_can_coexist(fresh_trader):
+    """Concurrent LONG and SHORT positions on different symbols."""
+    fresh_trader.max_positions = 5
+    long_pos = fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="BUY")
+    short_pos = fresh_trader.open_position("ETH/USDT", entry_price=2000.0, signal_type="SELL")
+    assert "error" not in long_pos
+    assert "error" not in short_pos
+    assert long_pos["type"] == "BUY"
+    assert short_pos["type"] == "SELL"
+    # Both directions priced consistently.
+    assert long_pos["take_profit"] > long_pos["entry_price"]
+    assert short_pos["take_profit"] < short_pos["entry_price"]
+
+
+def test_unknown_signal_still_rejected(fresh_trader):
+    """Defense in depth: bogus signal types must be refused."""
+    result = fresh_trader.open_position("BTC/USDT", entry_price=100.0, signal_type="WAT")
     assert result.get("error") == "UNSUPPORTED_SIGNAL"
 
 
