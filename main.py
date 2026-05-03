@@ -540,6 +540,11 @@ Monitoring markets...
                         self.active_symbols = [p['symbol'] for p in top_picks]
                         print(f"✅ Selected {len(self.active_symbols)} coins: {', '.join(self.active_symbols)}")
                         
+                        # Reset rate limit for ALL active coins (allow immediate scan after screening)
+                        for symbol in self.active_symbols:
+                            self.last_signal_time[symbol] = 0
+                        print(f"  🔄 Rate limits reset for all active coins")
+                        
                         # Send screening results to Telegram
                         self.send_screening_results(top_picks)
                     
