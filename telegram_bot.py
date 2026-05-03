@@ -123,18 +123,20 @@ class TelegramBot:
 
         lines.append("")
         lines.append(f"<b>Time:</b> {esc(signal_data.get('timestamp', _utc_now_str()))}")
-        if signal_data.get("signal") in {"BUY", "STRONG_BUY"} and signal_data.get("tp") and signal_data.get("sl"):
+        if signal_data.get("signal") in {"BUY", "STRONG_BUY", "SELL"} and signal_data.get("tp") and signal_data.get("sl"):
             lines.append("")
             lines.append("⚡ <b>Auto-execution enabled</b>")
         return self.send_message("\n".join(lines))
 
     def send_position_opened(self, position: dict[str, Any]) -> dict[str, Any] | None:
         tp_type = "📊" if position.get("tp_dynamic") else "⚙️"
+        side = "LONG" if position.get("type") == "BUY" else "SHORT"
+        side_ico = "🟢" if side == "LONG" else "🔴"
         lines = [
             f"💼 <b>POSITION OPENED</b> {tp_type}",
             "",
             f"<b>Symbol:</b> {esc(position['symbol'])}",
-            f"<b>Type:</b> {esc(position['type'])}",
+            f"<b>Type:</b> {side_ico} {side}",
             f"<b>Entry:</b> ${float(position['entry_price']):.4f}",
             f"<b>Size:</b> ${float(position['size_usd']):.2f} ({float(position['quantity']):.4f} coins)",
             f"<b>Margin:</b> ${float(position.get('margin', 0)):.2f}",
@@ -209,7 +211,8 @@ class TelegramBot:
         lines = ["📊 <b>OPEN POSITIONS</b>", "", f"Total: {len(positions)} position(s)", ""]
         for symbol, pos in positions.items():
             data = pos.to_dict() if hasattr(pos, "to_dict") else pos
-            ico = "🟢" if data["type"] == "BUY" else "🔴"
+            side = "LONG" if data["type"] == "BUY" else "SHORT"
+            ico = "🟢" if side == "LONG" else "🔴"
             entry = float(data["entry_price"])
             size_usd = float(data["size_usd"])
             qty = float(data["quantity"])
@@ -218,7 +221,7 @@ class TelegramBot:
             liq = float(data.get("liquidation_price", 0))
             lines.extend([
                 f"{ico} <b>{esc(symbol)}</b>",
-                f"Type: {esc(data['type'])}",
+                f"Type: {side}",
                 f"Entry: ${entry:.4f}",
                 f"Size: ${size_usd:.2f} ({qty:.4f} coins)",
                 f"TP: ${tp:.4f} | SL: ${sl:.4f}",
