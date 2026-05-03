@@ -1,164 +1,162 @@
 """
-Signal Generator Module
-Technical Analysis: RSI, MA, MACD, Volume
-Generates BUY/SELL/HOLD signals
+Signal Generator Module.
+
+Technical analysis: RSI, MA, MACD, Bollinger Bands, Volume.
+Generates BUY/STRONG_BUY/SELL/HOLD signals using *closed* candles to avoid
+repainting against the still-forming bar.
 """
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
 
 import ccxt
 import pandas as pd
-import pandas_ta as ta
-from datetime import datetime
-from config import (
-    EXCHANGE_ID, SYMBOLS, TIMEFRAME,
-    RSI_OVERBOUGHT, RSI_OVERSOLD, MA_PERIOD
-)
+import pandas_ta_classic as ta
+
+from config import EXCHANGE_ID, RSI_OVERBOUGHT, RSI_OVERSOLD, SYMBOLS, TIMEFRAME
 from tp_sl_calculator import calculate_dynamic_tp_sl
+
+logger = logging.getLogger(__name__)
+
+
+def _make_exchange(exchange_id: str = EXCHANGE_ID):
+    return getattr(ccxt, exchange_id)({"enableRateLimit": True})
 
 
 class SignalGenerator:
-    def __init__(self):
-        # No API keys needed for public data (prices, OHLCV)
-        self.exchange = getattr(ccxt, EXCHANGE_ID)({
-            'enableRateLimit': True,
-            # API keys only needed for private endpoints (orders, balances)
-            # 'apiKey': API_KEY,  # Not needed for paper trading
-            # 'secret': API_SECRET,  # Not needed for paper trading
-        })
-    
-    def fetch_ohlcv(self, symbol, timeframe=TIMEFRAME, limit=100):
-        """Fetch candlestick data from exchange"""
+    def __init__(self, exchange: Any | None = None) -> None:
+        # Allow caller to inject a shared ccxt instance to avoid duplicate
+        # rate limiters across modules.
+        self.exchange = exchange if exchange is not None else _make_exchange()
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = TIMEFRAME, limit: int = 100) -> pd.DataFrame | None:
+        """Fetch OHLCV bars and drop the in-progress candle.
+
+        ccxt returns the still-forming candle at index -1; we strip it to
+        prevent indicators that read ``iloc[-1]`` from repainting.
+        """
         try:
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
+            if not ohlcv:
+                return None
+            df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            # Drop the latest (in-progress) candle.
+            if len(df) > 1:
+                df = df.iloc[:-1].reset_index(drop=True)
             return df
-        except Exception as e:
-            print(f"Error fetching data for {symbol}: {e}")
+        except Exception as exc:
+            logger.warning("Error fetching OHLCV for %s: %s", symbol, exc)
             return None
-    
-    def calculate_indicators(self, df):
-        """Calculate technical indicators"""
+
+    @staticmethod
+    def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame | None:
         if df is None or len(df) < 50:
             return None
-        
-        # RSI
-        df['rsi'] = ta.rsi(df['close'], length=14)
-        
-        # Moving Averages
-        df['ma_20'] = ta.sma(df['close'], length=20)
-        df['ma_50'] = ta.sma(df['close'], length=50)
-        df['ema_20'] = ta.ema(df['close'], length=20)
-        
-        # MACD
-        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-        df['macd'] = macd['MACD_12_26_9']
-        df['macd_signal'] = macd['MACDs_12_26_9']
-        df['macd_hist'] = macd['MACDh_12_26_9']
-        
-        # Bollinger Bands
-        bbands = ta.bbands(df['close'], length=20)
-        df['bb_upper'] = bbands['BBU_20_2.0']
-        df['bb_lower'] = bbands['BBL_20_2.0']
-        
-        # Volume SMA
-        df['vol_sma'] = ta.sma(df['volume'], length=20)
-        
+
+        df = df.copy()
+        df["rsi"] = ta.rsi(df["close"], length=14)
+        df["ma_20"] = ta.sma(df["close"], length=20)
+        df["ma_50"] = ta.sma(df["close"], length=50)
+        df["ema_20"] = ta.ema(df["close"], length=20)
+
+        macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        if macd is not None:
+            df["macd"] = macd["MACD_12_26_9"]
+            df["macd_signal"] = macd["MACDs_12_26_9"]
+            df["macd_hist"] = macd["MACDh_12_26_9"]
+
+        bbands = ta.bbands(df["close"], length=20)
+        if bbands is not None:
+            df["bb_upper"] = bbands["BBU_20_2.0"]
+            df["bb_lower"] = bbands["BBL_20_2.0"]
+
+        df["vol_sma"] = ta.sma(df["volume"], length=20)
         return df
-    
-    def generate_signal(self, symbol):
-        """
-        Generate trading signal based on technical indicators
-        Returns: dict with signal info
-        """
+
+    def generate_signal(self, symbol: str) -> dict[str, Any]:
         df = self.fetch_ohlcv(symbol)
         if df is None:
-            return {'symbol': symbol, 'signal': 'ERROR', 'reason': 'No data'}
-        
+            return {"symbol": symbol, "signal": "ERROR", "reason": "No data"}
+
         df = self.calculate_indicators(df)
         if df is None:
-            return {'symbol': symbol, 'signal': 'ERROR', 'reason': 'Insufficient data'}
-        
+            return {"symbol": symbol, "signal": "ERROR", "reason": "Insufficient data"}
+
+        # Use closed candles for both "latest" and "previous" indicator reads.
         latest = df.iloc[-1]
         prev = df.iloc[-2]
-        
-        signal = 'HOLD'
-        reasons = []
+
+        reasons: list[str] = []
         confidence = 0
-        
-        # RSI Signal
-        if latest['rsi'] < RSI_OVERSOLD:
+
+        if latest["rsi"] < RSI_OVERSOLD:
             reasons.append(f"RSI oversold ({latest['rsi']:.1f})")
             confidence += 1
-        elif latest['rsi'] > RSI_OVERBOUGHT:
+        elif latest["rsi"] > RSI_OVERBOUGHT:
             reasons.append(f"RSI overbought ({latest['rsi']:.1f})")
             confidence -= 1
-        
-        # MA Crossover
-        if latest['close'] > latest['ma_20'] and prev['close'] <= prev['ma_20']:
+
+        if latest["close"] > latest["ma_20"] and prev["close"] <= prev["ma_20"]:
             reasons.append("Price crossed above MA20")
             confidence += 1
-        elif latest['close'] < latest['ma_20'] and prev['close'] >= prev['ma_20']:
+        elif latest["close"] < latest["ma_20"] and prev["close"] >= prev["ma_20"]:
             reasons.append("Price crossed below MA20")
             confidence -= 1
-        
-        # MACD Crossover
-        if latest['macd'] > latest['macd_signal'] and prev['macd'] <= prev['macd_signal']:
-            reasons.append("MACD bullish crossover")
-            confidence += 1
-        elif latest['macd'] < latest['macd_signal'] and prev['macd'] >= prev['macd_signal']:
-            reasons.append("MACD bearish crossover")
-            confidence -= 1
-        
-        # Volume Spike
-        if latest['volume'] > latest['vol_sma'] * 2:
+
+        if "macd" in df.columns and "macd_signal" in df.columns:
+            if latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]:
+                reasons.append("MACD bullish crossover")
+                confidence += 1
+            elif latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]:
+                reasons.append("MACD bearish crossover")
+                confidence -= 1
+
+        if latest["volume"] > latest["vol_sma"] * 2:
             reasons.append(f"Volume spike ({latest['volume']/latest['vol_sma']:.1f}x)")
             confidence += 1
-        
-        # Determine final signal with better thresholds
-        # Score >= 3: STRONG BUY (100% position)
-        # Score == 2: BUY (can open position)
-        # Score 1 to -1: HOLD (wait)
-        # Score <= -2: SELL/AVOID (but bot is LONG-only, so convert to HOLD)
+
+        # Confidence thresholds:
+        # >= 3: STRONG_BUY, == 2: BUY, <= -2: SELL (long-only bot ignores SELL),
+        # otherwise HOLD.
         if confidence >= 3:
-            signal = 'STRONG_BUY'  # High confidence
+            signal = "STRONG_BUY"
         elif confidence >= 2:
-            signal = 'BUY'  # Good entry
+            signal = "BUY"
         elif confidence <= -2:
-            signal = 'SELL'  # Bearish, but LONG-only bot will treat as HOLD
+            signal = "SELL"
         else:
-            signal = 'HOLD'
-        
-        # Calculate dynamic TP/SL using shared module
-        levels = calculate_dynamic_tp_sl(df, latest['close'], signal)
-        
+            signal = "HOLD"
+
+        levels = calculate_dynamic_tp_sl(df, float(latest["close"]), signal)
+
         return {
-            'symbol': symbol,
-            'signal': signal,
-            'price': latest['close'],
-            'rsi': latest['rsi'],
-            'macd': latest['macd'],
-            'confidence': confidence,
-            'reasons': reasons,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'tp': levels['tp'],
-            'sl': levels['sl'],
-            'rr_ratio': levels['rr_ratio'],
-            'tp_pct': levels['tp_pct'],
-            'sl_pct': levels['sl_pct']
+            "symbol": symbol,
+            "signal": signal,
+            "price": float(latest["close"]),
+            "rsi": float(latest["rsi"]),
+            "macd": float(latest.get("macd", 0.0) or 0.0),
+            "confidence": int(confidence),
+            "reasons": reasons,
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "tp": levels["tp"],
+            "sl": levels["sl"],
+            "rr_ratio": levels["rr_ratio"],
+            "tp_pct": levels["tp_pct"],
+            "sl_pct": levels["sl_pct"],
         }
-    
-    def scan_all_symbols(self):
-        """Scan all configured symbols and return signals"""
-        signals = []
-        for symbol in SYMBOLS:
-            signal = self.generate_signal(symbol)
-            signals.append(signal)
-        return signals
+
+    def scan_all_symbols(self) -> list[dict[str, Any]]:
+        return [self.generate_signal(symbol) for symbol in SYMBOLS]
 
 
-# Test function
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
+    import logging_config
+    logging_config.setup_logging()
     generator = SignalGenerator()
-    signals = generator.scan_all_symbols()
-    for s in signals:
-        print(f"{s['symbol']}: {s['signal']} @ ${s['price']:.2f} (Confidence: {s['confidence']})")
+    for s in generator.scan_all_symbols():
+        logger.info("%s: %s @ $%.2f (Confidence: %s)", s["symbol"], s["signal"],
+                    s.get("price", 0), s.get("confidence", "n/a"))
