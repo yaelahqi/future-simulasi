@@ -31,18 +31,31 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
         atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
         
         if signal_type in ['BUY', 'STRONG_BUY']:
-            # For BUY: TP at resistance, SL at support
-            tp = min(recent_high, bb_upper)  # Conservative TP
-            sl = max(recent_low, bb_lower)   # Conservative SL
+            # For BUY: TP must be ABOVE current price, SL must be BELOW
+            # TP at resistance (recent high or BB upper)
+            tp_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
+            if tp_candidates:
+                tp = min(tp_candidates)  # Conservative (closest resistance)
+            else:
+                # No resistance above, use ATR
+                tp = current_price + (atr * 2)
+            
+            # SL at support (recent low or BB lower)
+            sl_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
+            if sl_candidates:
+                sl = max(sl_candidates)  # Conservative (closest support)
+            else:
+                # No support below, use ATR
+                sl = current_price - atr
             
             # Calculate R:R
             risk = current_price - sl
             reward = tp - current_price
             
+            # Fallback if still invalid
             if risk <= 0 or reward <= 0:
-                # Fallback to ATR-based levels
-                tp = current_price + (atr * 1.5)
-                sl = current_price - atr
+                tp = current_price * 1.05  # 5% TP
+                sl = current_price * 0.97  # 3% SL
                 risk = current_price - sl
                 reward = tp - current_price
             
