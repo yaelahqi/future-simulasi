@@ -1,270 +1,292 @@
 """
-Telegram Bot Module
-Sends trading signals and alerts to Telegram
-Receives commands from user
+Telegram Bot Module.
+
+Sends trading signals/alerts to a single Telegram chat and receives commands
+from the user. Uses HTML parse mode with escaping to avoid the well-known
+Markdown injection issues, and applies a hard request timeout to every
+network call.
 """
 
+from __future__ import annotations
+
+import html
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
 import requests
-import json
-from datetime import datetime
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+from config import HTTP_TIMEOUT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+logger = logging.getLogger(__name__)
+
+
+def _utc_now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def esc(value: Any) -> str:
+    """HTML-escape a value for safe inclusion in Telegram messages."""
+    return html.escape(str(value), quote=False)
 
 
 class TelegramBot:
-    def __init__(self):
-        self.token = TELEGRAM_BOT_TOKEN
-        self.chat_id = TELEGRAM_CHAT_ID
+    def __init__(self, token: str | None = None, chat_id: str | None = None) -> None:
+        self.token = token or TELEGRAM_BOT_TOKEN
+        self.chat_id = chat_id or TELEGRAM_CHAT_ID
         self.base_url = f"https://api.telegram.org/bot{self.token}"
-    
-    def send_message(self, text, parse_mode='Markdown'):
-        """Send text message to Telegram"""
-        url = f"{self.base_url}/sendMessage"
-        data = {
-            'chat_id': self.chat_id,
-            'text': text,
-            'parse_mode': parse_mode
-        }
-        
+        self._session = requests.Session()
+
+    # ------------------------------ network ------------------------------ #
+
+    def _request(self, method: str, path: str, **kwargs) -> dict[str, Any] | None:
+        url = f"{self.base_url}/{path}"
+        kwargs.setdefault("timeout", HTTP_TIMEOUT)
         try:
-            response = requests.post(url, json=data)
-            return response.json()
-        except Exception as e:
-            print(f"Error sending message: {e}")
-            return None
-    
-    def send_signal(self, signal_data):
-        """
-        Send trading signal alert
-        signal_data: dict from SignalGenerator
-        """
-        emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '🟡', 'ERROR': '⚠️'}
-        
-        text = f"""
-{emoji.get(signal_data['signal'], '⚪')} *TRADING SIGNAL* {emoji.get(signal_data['signal'], '⚪')}
+            resp = self._session.request(method, url, **kwargs)
+            data = resp.json()
+            if not data.get("ok", False):
+                logger.warning("Telegram %s %s returned not-ok: %s", method, path, data.get("description"))
+            return data
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.warning("Telegram %s %s network error: %s", method, path, exc)
+        except Exception as exc:
+            logger.exception("Telegram %s %s unexpected error: %s", method, path, exc)
+        return None
 
-*Symbol:* {signal_data['symbol']}
-*Signal:* {signal_data['signal']}
-*Price:* ${signal_data.get('price', 0):.2f}
+    def send_message(self, text: str, parse_mode: str = "HTML") -> dict[str, Any] | None:
+        return self._request(
+            "POST",
+            "sendMessage",
+            json={
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": parse_mode,
+                "disable_web_page_preview": True,
+            },
+        )
 
-*Technical Indicators:*
-• RSI: {signal_data.get('rsi', 0):.1f}
-• MACD: {signal_data.get('macd', 0):.4f}
-• Confidence: {signal_data.get('confidence', 0)}
+    def get_updates(self, offset: int | None = None, long_poll_seconds: int = 20) -> dict[str, Any] | None:
+        params: dict[str, Any] = {"timeout": long_poll_seconds}
+        if offset is not None:
+            params["offset"] = offset
+        # Total client timeout = long-poll + slack so requests doesn't cut us
+        # off before Telegram returns the long-poll batch.
+        return self._request("GET", "getUpdates", params=params, timeout=long_poll_seconds + 5)
 
-*Reasons:*
-"""
-        
-        for reason in signal_data.get('reasons', []):
-            text += f"• {reason}\n"
-        
-        # Show dynamic TP/SL if available
-        if signal_data.get('tp') and signal_data.get('sl'):
-            tp_pct = signal_data.get('tp_pct', 0)
-            sl_pct = signal_data.get('sl_pct', 0)
-            rr_ratio = signal_data.get('rr_ratio', 1.0)
-            
-            text += f"""
-📊 *Dynamic Levels:*
-• TP: ${signal_data['tp']:.4f} (+{tp_pct:.1f}%)
-• SL: ${signal_data['sl']:.4f} (-{sl_pct:.1f}%)
-• R:R: {rr_ratio}:1 {'✅' if rr_ratio >= 1.5 else '⚠️'}
-"""
-        
-        text += f"\n*Time:* {signal_data.get('timestamp', 'N/A')}"
-        
-        if signal_data['signal'] in ['BUY', 'SELL']:
-            if signal_data.get('tp') and signal_data.get('sl'):
-                text += f"\n\n⚡ **Auto-execution enabled!** Position will open if conditions met."
-            else:
-                text += f"\n\n⚡ *Action Required!* Check your trading bot."
-        
+    def get_me(self) -> dict[str, Any] | None:
+        return self._request("GET", "getMe")
+
+    # ------------------------------ messages ----------------------------- #
+
+    def send_signal(self, signal_data: dict[str, Any]) -> dict[str, Any] | None:
+        emoji = {"BUY": "🟢", "STRONG_BUY": "🟢", "SELL": "🔴", "HOLD": "🟡", "ERROR": "⚠️"}
+        ico = emoji.get(signal_data.get("signal"), "⚪")
+        symbol = esc(signal_data.get("symbol", ""))
+        sig = esc(signal_data.get("signal", ""))
+        price = float(signal_data.get("price", 0) or 0)
+        rsi = float(signal_data.get("rsi", 0) or 0)
+        macd = float(signal_data.get("macd", 0) or 0)
+        confidence = signal_data.get("confidence", 0)
+
+        lines = [
+            f"{ico} <b>TRADING SIGNAL</b> {ico}",
+            "",
+            f"<b>Symbol:</b> {symbol}",
+            f"<b>Signal:</b> {sig}",
+            f"<b>Price:</b> ${price:.4f}",
+            "",
+            "<b>Technical Indicators:</b>",
+            f"• RSI: {rsi:.1f}",
+            f"• MACD: {macd:.4f}",
+            f"• Confidence: {esc(confidence)}",
+            "",
+            "<b>Reasons:</b>",
+        ]
+        for reason in signal_data.get("reasons", []):
+            lines.append(f"• {esc(reason)}")
+
+        if signal_data.get("tp") and signal_data.get("sl"):
+            tp = float(signal_data["tp"])
+            sl = float(signal_data["sl"])
+            tp_pct = float(signal_data.get("tp_pct", 0) or 0)
+            sl_pct = float(signal_data.get("sl_pct", 0) or 0)
+            rr_ratio = float(signal_data.get("rr_ratio", 1.0) or 1.0)
+            ok_emoji = "✅" if rr_ratio >= 1.5 else "⚠️"
+            lines.extend([
+                "",
+                "📊 <b>Dynamic Levels:</b>",
+                f"• TP: ${tp:.4f} (+{tp_pct:.1f}%)",
+                f"• SL: ${sl:.4f} (-{sl_pct:.1f}%)",
+                f"• R:R: {rr_ratio}:1 {ok_emoji}",
+            ])
+
+        lines.append("")
+        lines.append(f"<b>Time:</b> {esc(signal_data.get('timestamp', _utc_now_str()))}")
+        if signal_data.get("signal") in {"BUY", "STRONG_BUY"} and signal_data.get("tp") and signal_data.get("sl"):
+            lines.append("")
+            lines.append("⚡ <b>Auto-execution enabled</b>")
+        return self.send_message("\n".join(lines))
+
+    def send_position_opened(self, position: dict[str, Any]) -> dict[str, Any] | None:
+        tp_type = "📊" if position.get("tp_dynamic") else "⚙️"
+        lines = [
+            f"💼 <b>POSITION OPENED</b> {tp_type}",
+            "",
+            f"<b>Symbol:</b> {esc(position['symbol'])}",
+            f"<b>Type:</b> {esc(position['type'])}",
+            f"<b>Entry:</b> ${float(position['entry_price']):.4f}",
+            f"<b>Size:</b> ${float(position['size_usd']):.2f} ({float(position['quantity']):.4f} coins)",
+            f"<b>Margin:</b> ${float(position.get('margin', 0)):.2f}",
+            f"<b>Leverage:</b> {esc(position.get('leverage', 1))}x",
+            "",
+            "<b>Targets:</b>",
+            f"• TP: ${float(position['take_profit']):.4f} {tp_type}",
+            f"• SL: ${float(position['stop_loss']):.4f}",
+            f"• Liq~: ${float(position.get('liquidation_price', 0)):.4f}",
+        ]
+        if position.get("rr_ratio"):
+            lines.append(f"<b>R:R Ratio:</b> {esc(position['rr_ratio'])}:1")
+        lines.append("")
+        lines.append(f"<b>Time:</b> {esc(position.get('opened_at', _utc_now_str()))}")
+        return self.send_message("\n".join(lines))
+
+    def send_position_closed(self, position: dict[str, Any]) -> dict[str, Any] | None:
+        pnl = float(position.get("pnl", 0.0))
+        pnl_pct = float(position.get("pnl_pct", 0.0))
+        fee = float(position.get("fees_paid", 0.0))
+        sign = "+" if pnl >= 0 else ""
+        ico = "✅" if pnl > 0 else "❌"
+        lines = [
+            f"{ico} <b>POSITION CLOSED</b>",
+            "",
+            f"<b>Symbol:</b> {esc(position['symbol'])}",
+            f"<b>Exit:</b> ${float(position['exit_price']):.4f}",
+            f"<b>Reason:</b> {esc(position['close_reason'])}",
+            "",
+            f"<b>PnL (net):</b> {sign}${pnl:.4f} ({sign}{pnl_pct:.2f}% on margin)",
+            f"<b>Fees:</b> ${fee:.4f}",
+            "",
+            f"<b>Duration:</b> {esc(position.get('opened_at', ''))} → {esc(position.get('exit_time', ''))}",
+        ]
+        return self.send_message("\n".join(lines))
+
+    def send_portfolio_summary(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        pnl = float(summary.get("total_pnl", 0.0))
+        pnl_pct = float(summary.get("total_pnl_pct", 0.0))
+        sign = "+" if pnl >= 0 else ""
+        ico = "✅" if pnl >= 0 else "❌"
+        win_rate = (summary["winning_trades"] / max(summary["total_trades"], 1)) * 100
+        lines = [
+            "📊 <b>PORTFOLIO SUMMARY</b>",
+            "",
+            "<b>Capital:</b>",
+            f"• Initial: ${float(summary['initial_capital']):.2f}",
+            f"• Current: ${float(summary['current_capital']):.2f}",
+            f"• PnL: {ico} {sign}${pnl:.2f} ({sign}{pnl_pct:.2f}%)",
+            "",
+            "<b>Positions:</b>",
+            f"• Open: {esc(summary['open_positions'])}",
+            f"• Total Trades: {esc(summary['total_trades'])}",
+            f"• Winners: {esc(summary['winning_trades'])}",
+            f"• Losers: {esc(summary['losing_trades'])}",
+            f"• Win Rate: {win_rate:.1f}%",
+            "",
+            f"<b>Time:</b> {esc(_utc_now_str())}",
+        ]
+        return self.send_message("\n".join(lines))
+
+    def send_error(self, error_message: str) -> dict[str, Any] | None:
+        text = f"⚠️ <b>ERROR ALERT</b>\n\n{esc(error_message)}\n\n<b>Time:</b> {esc(_utc_now_str())}"
         return self.send_message(text)
-    
-    def send_position_opened(self, position):
-        """Send notification when position is opened"""
-        tp_type = "📊" if position.get('tp_dynamic') else "⚙️"
-        rr_info = f"\n*R:R Ratio:* {position['rr_ratio']}:1" if position.get('rr_ratio') else ""
-        
-        text = f"""
-💼 *POSITION OPENED* {tp_type}
 
-*Symbol:* {position['symbol']}
-*Type:* {position['type']}
-*Entry:* ${position['entry_price']:.4f}
-*Size:* ${position['size_usd']:.2f} ({position['quantity']:.4f} coins)
-*Leverage:* {position.get('leverage', 10)}x
-
-*Targets:*
-• TP: ${position['take_profit']:.4f} {tp_type}
-• SL: ${position['stop_loss']:.4f}{rr_info}
-
-*Time:* {position['opened_at']}
-"""
-        return self.send_message(text)
-    
-    def send_position_closed(self, position):
-        """Send notification when position is closed"""
-        pnl_emoji = '✅' if position['pnl'] > 0 else '❌'
-        pnl_color = '+' if position['pnl'] > 0 else ''
-        
-        text = f"""
-{pnl_emoji} *POSITION CLOSED*
-
-*Symbol:* {position['symbol']}
-*Exit:* ${position['exit_price']:.2f}
-*Reason:* {position['close_reason']}
-
-*PnL:* {pnl_color}${position['pnl']:.2f} ({pnl_color}{position['pnl_pct']:.2f}%)
-
-*Duration:* {position['opened_at']} → {position['exit_time']}
-"""
-        return self.send_message(text)
-    
-    def send_portfolio_summary(self, summary):
-        """Send daily/weekly portfolio summary"""
-        pnl_emoji = '✅' if summary['total_pnl'] >= 0 else '❌'
-        pnl_color = '+' if summary['total_pnl'] >= 0 else ''
-        
-        win_rate = (summary['winning_trades'] / max(summary['total_trades'], 1)) * 100
-        
-        text = f"""
-📊 *PORTFOLIO SUMMARY*
-
-*Capital:*
-• Initial: ${summary['initial_capital']:.2f}
-• Current: ${summary['current_capital']:.2f}
-• PnL: {pnl_color}${summary['total_pnl']:.2f} ({pnl_color}{summary['total_pnl_pct']:.2f}%)
-
-*Positions:*
-• Open: {summary['open_positions']}
-• Total Trades: {summary['total_trades']}
-• Winning: {summary['winning_trades']}
-• Losing: {summary['losing_trades']}
-• Win Rate: {win_rate:.1f}%
-
-*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
-        return self.send_message(text)
-    
-    def send_error(self, error_message):
-        """Send error notification"""
-        text = f"""
-⚠️ *ERROR ALERT*
-
-{error_message}
-
-*Time:* {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
-        return self.send_message(text)
-    
-    def get_updates(self, offset=None):
-        """Get updates from Telegram"""
-        url = f"{self.base_url}/getUpdates"
-        params = {'offset': offset, 'timeout': 30} if offset else {'timeout': 30}
-        
-        try:
-            response = requests.get(url, params=params)
-            return response.json()
-        except Exception as e:
-            print(f"Error getting updates: {e}")
-            return None
-    
-    def get_me(self):
-        """Get bot info"""
-        url = f"{self.base_url}/getMe"
-        try:
-            response = requests.get(url)
-            return response.json()
-        except Exception as e:
-            print(f"Error getting bot info: {e}")
-            return None
-    
-    def send_positions(self, positions):
-        """Send current open positions"""
+    def send_positions(self, positions: dict[str, Any]) -> dict[str, Any] | None:
         if not positions:
-            text = "📭 *NO OPEN POSITIONS*\n\nNo active trades at the moment.\n\nWaiting for new signals..."
-            return self.send_message(text)
-        
-        text = "📊 *OPEN POSITIONS*\n\n"
-        text += f"Total: {len(positions)} position(s)\n\n"
-        
+            return self.send_message(
+                "📭 <b>NO OPEN POSITIONS</b>\n\nNo active trades.\nWaiting for new signals..."
+            )
+
+        lines = ["📊 <b>OPEN POSITIONS</b>", "", f"Total: {len(positions)} position(s)", ""]
         for symbol, pos in positions.items():
-            emoji = '🟢' if pos['type'] == 'BUY' else '🔴'
-            text += f"{emoji} *{symbol}*\n"
-            text += f"Type: {pos['type']}\n"
-            text += f"Entry: ${pos['entry_price']:.4f}\n"
-            text += f"Size: ${pos['size_usd']:.2f} ({pos['quantity']:.4f} coins)\n"
-            text += f"TP: ${pos['take_profit']:.4f} | SL: ${pos['stop_loss']:.4f}\n"
-            text += f"Opened: {pos['opened_at']}\n\n"
-        
+            data = pos.to_dict() if hasattr(pos, "to_dict") else pos
+            ico = "🟢" if data["type"] == "BUY" else "🔴"
+            entry = float(data["entry_price"])
+            size_usd = float(data["size_usd"])
+            qty = float(data["quantity"])
+            tp = float(data["take_profit"])
+            sl = float(data["stop_loss"])
+            liq = float(data.get("liquidation_price", 0))
+            lines.extend([
+                f"{ico} <b>{esc(symbol)}</b>",
+                f"Type: {esc(data['type'])}",
+                f"Entry: ${entry:.4f}",
+                f"Size: ${size_usd:.2f} ({qty:.4f} coins)",
+                f"TP: ${tp:.4f} | SL: ${sl:.4f}",
+                f"Lev: {esc(data.get('leverage', 1))}x | Liq~: ${liq:.4f}",
+                f"Opened: {esc(data['opened_at'])}",
+                "",
+            ])
+        return self.send_message("\n".join(lines))
+
+    def send_pnl(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        pnl = float(summary.get("total_pnl", 0.0))
+        pnl_pct = float(summary.get("total_pnl_pct", 0.0))
+        sign = "+" if pnl >= 0 else ""
+        ico = "✅" if pnl >= 0 else "❌"
+        win_rate = (summary["winning_trades"] / max(summary["total_trades"], 1)) * 100
+        lines = [
+            "💰 <b>P&amp;L SUMMARY</b>",
+            "",
+            "<b>Capital:</b>",
+            f"• Initial: ${float(summary['initial_capital']):.2f}",
+            f"• Current: ${float(summary['current_capital']):.2f}",
+            f"• Locked: ${float(summary['locked_capital']):.2f} 🔒",
+            f"• Available: ${float(summary['available_capital']):.2f} 💵",
+            f"• Total P&amp;L: {ico} {sign}${pnl:.2f} ({sign}{pnl_pct:.2f}%)",
+            "",
+            "<b>Trading Stats:</b>",
+            f"• Total Trades: {esc(summary['total_trades'])}",
+            f"• Winners: {esc(summary['winning_trades'])} ✅",
+            f"• Losers: {esc(summary['losing_trades'])} ❌",
+            f"• Win Rate: {win_rate:.1f}%",
+        ]
+        if summary.get("open_positions", 0) > 0:
+            lines.append(f"• Open Positions: {esc(summary['open_positions'])} 📊")
+        lines.append("")
+        lines.append(f"<b>Time:</b> {esc(_utc_now_str())}")
+        return self.send_message("\n".join(lines))
+
+    def send_risk_alert(self, alert_type: str, message: str) -> dict[str, Any] | None:
+        ico = "⚠️" if alert_type == "warning" else "🚨"
+        text = (
+            f"{ico} <b>RISK ALERT</b>\n\n"
+            f"<b>Type:</b> {esc(alert_type.upper())}\n\n"
+            f"{esc(message)}\n\n"
+            f"<b>Time:</b> {esc(_utc_now_str())}"
+        )
         return self.send_message(text)
-    
-    def send_pnl(self, summary):
-        """Send PnL summary"""
-        pnl_emoji = '✅' if summary['total_pnl'] >= 0 else '❌'
-        pnl_color = '+' if summary['total_pnl'] >= 0 else ''
-        
-        win_rate = (summary['winning_trades'] / max(summary['total_trades'], 1)) * 100
-        
-        text = f"💰 *P&L SUMMARY*\n\n"
-        text += f"*Capital:*\n"
-        text += f"• Initial: ${summary['initial_capital']:.2f}\n"
-        text += f"• Current: ${summary['current_capital']:.2f}\n"
-        text += f"• Locked: ${summary['locked_capital']:.2f} 🔒\n"
-        text += f"• Available: ${summary['available_capital']:.2f} 💵\n"
-        text += f"• Total P&L: {pnl_color}${summary['total_pnl']:.2f} ({pnl_color}{summary['total_pnl_pct']:.2f}%)\n\n"
-        
-        text += f"*Trading Stats:*\n"
-        text += f"• Total Trades: {summary['total_trades']}\n"
-        text += f"• Winners: {summary['winning_trades']} ✅\n"
-        text += f"• Losers: {summary['losing_trades']} ❌\n"
-        text += f"• Win Rate: {win_rate:.1f}%\n\n"
-        
-        if summary['open_positions'] > 0:
-            text += f"• Open Positions: {summary['open_positions']} 📊\n"
-        
-        # Show compounding info
-        if summary['total_pnl'] > 0:
-            text += f"\n🚀 *Compounding Active!*\n"
-            text += f"Position size increased by {summary['total_pnl_pct']:.1f}%"
-        
-        text += f"\n\n_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
-        
-        return self.send_message(text)
-    
-    def send_risk_alert(self, alert_type, message):
-        """Send risk management alert"""
-        emoji = '⚠️' if alert_type == 'warning' else '🚨'
-        text = f"{emoji} *RISK ALERT*\n\n"
-        text += f"*Type:* {alert_type.upper()}\n\n"
-        text += f"{message}\n\n"
-        text += f"_Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}._"
-        return self.send_message(text)
-    
-    def send_control_response(self, command, status, message):
-        """Send response for control commands"""
-        emoji = '✅' if status else '❌'
-        text = f"{emoji} *{command.upper()}*\n\n"
-        text += message
-        return self.send_message(text)
-    
-    def send_trailing_stop_update(self, update_data):
-        """Send trailing stop update notification"""
-        text = f"📊 *TRAILING STOP UPDATE*\n\n"
-        text += f"*Symbol:* {update_data['symbol']}\n"
-        text += f"*Old SL:* ${update_data['old_sl']:.4f}\n"
-        text += f"*New SL:* ${update_data['new_sl']:.4f}\n\n"
-        text += f"_Profit locked automatically!_"
+
+    def send_control_response(self, command: str, status: bool, message: str) -> dict[str, Any] | None:
+        ico = "✅" if status else "❌"
+        return self.send_message(f"{ico} <b>{esc(command.upper())}</b>\n\n{esc(message)}")
+
+    def send_trailing_stop_update(self, update_data: dict[str, Any]) -> dict[str, Any] | None:
+        old_sl = float(update_data["old_sl"])
+        new_sl = float(update_data["new_sl"])
+        text = (
+            "📊 <b>TRAILING STOP UPDATE</b>\n\n"
+            f"<b>Symbol:</b> {esc(update_data['symbol'])}\n"
+            f"<b>Old SL:</b> ${old_sl:.4f}\n"
+            f"<b>New SL:</b> ${new_sl:.4f}\n\n"
+            "<i>Profit locked automatically.</i>"
+        )
         return self.send_message(text)
 
 
-# Test function
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
+    import logging_config
+
+    logging_config.setup_logging()
     bot = TelegramBot()
-    
-    # Test connection
-    me = bot.get_me()
-    print(f"Bot: {me}")
-    
-    # Test message
-    bot.send_message("🤖 Trading Bot Test - Connection Successful!")
+    info = bot.get_me()
+    logger.info("Bot info: %s", info)

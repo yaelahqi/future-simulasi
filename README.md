@@ -4,22 +4,26 @@ Automated crypto trading bot with Telegram alerts and paper trading. Perfect for
 
 ## ✨ Features
 
-- 📊 **Technical Analysis** - RSI, MACD, Moving Averages, Volume
-- 📱 **Telegram Alerts** - Real-time signal notifications
-- 📝 **Paper Trading** - Test strategies risk-free
-- 🔄 **Auto Execution** - Open/close positions based on signals
-- 📈 **Portfolio Tracking** - PnL, win rate, trade history
-- 🔍 **Market Screener** - Auto-scan and select best coins
-- 🚀 **Auto-Compounding** - Profits automatically increase position size
-- 💵 **Capital Management** - Track locked vs available capital
-- 🛡️ **Risk Management** - Max positions, daily loss limit, leverage cap
-- 📊 **Trailing Stop Loss** - Auto-lock profits as price moves in favor
-- 🎮 **Telegram Control** - Pause/resume trading, close positions remotely
-- ⚙️ **Configurable** - Easy setup via environment variables
+- 📊 **Technical Analysis** — RSI, MACD, Moving Averages, Bollinger Bands, Volume (computed on **closed** candles, not the still-forming bar)
+- 📱 **Telegram Alerts** — Real-time signal notifications with HTML escaping
+- 📝 **Paper Trading** — Risk-free simulation with **realistic taker fee, slippage, and isolated-margin liquidation**
+- 🔄 **Auto Execution** — Long-only entries triggered by signals
+- 📈 **Portfolio Tracking** — PnL, win rate, trade history (persisted across restarts)
+- 🔍 **Market Screener** — Auto-scan and select best coins by volume + signal score
+- 🚀 **Compounding** — Position size scales with TOTAL equity (winning trades grow the per-trade base)
+- 💵 **Capital Management** — Free vs locked capital tracked under a thread lock
+- 🛡️ **Risk Management** — Max positions, daily loss limit (vs start-of-day equity), leverage cap, post-SL blacklist
+- 📊 **Trailing Stop Loss** — Auto-lock profits, ratchet-only (never loosens)
+- 🎮 **Telegram Control** — Pause/resume, close-one, close-all (with confirmation), reset (with confirmation), manual screen
+- ⚙️ **Configurable** — Every loop interval, fee, slippage, etc. tunable via env
+
+## ⚠️ Disclaimer
+
+This project is a **paper-trading simulator for educational purposes**. The simulated taker fee, slippage, and liquidation models are simplifications and **do not capture funding rates, partial fills, exchange outages, or maintenance-margin tiers**. Real-money trading carries serious risk of loss. **Do not** treat green simulated PnL as a guarantee of live performance.
 
 ## 📋 Requirements
 
-- Python 3.8+
+- Python 3.9+
 - Telegram account
 - Internet connection
 
@@ -101,8 +105,8 @@ python main.py
 | `/pause` | Pause trading (no new positions) |
 | `/resume` | Resume trading |
 | `/close SYMBOL` | Close specific position (e.g., `/close SOL`) |
-| `/closeall` | Close all open positions |
-| `/reset` | Reset capital to initial (closes all positions) |
+| `/closeall confirm` | Close all open positions (requires `confirm` token) |
+| `/reset confirm` | Reset capital to initial — closes all positions (requires `confirm`) |
 | `/screen` | Manual screening trigger (get fresh signals) |
 
 ### Info Commands
@@ -155,30 +159,54 @@ python main.py
 
 ### Signal Logic
 
-**BUY Signal (Confidence ≥ 2):**
-- RSI < 30 (oversold)
-- Price crosses above MA20
-- MACD bullish crossover
-- Volume spike (>2x average)
+Confidence is the sum of contributions from each indicator (`+1` bullish / `-1` bearish, RSI extreme weighs `±2` in the screener).
 
-**SELL Signal (Confidence ≤ -2):**
-- RSI > 70 (overbought)
-- Price crosses below MA20
-- MACD bearish crossover
-- Volume spike
+**STRONG_BUY** — confidence `≥ 3` (used for the most aggressive entries)
+**BUY** — confidence `2`
+**HOLD** — confidence in `[-1, +1]`
+**SELL** — confidence `≤ -2` (logged but **not acted on** — bot is long-only)
+
+Indicators considered:
+- RSI < 30 oversold (`+1`) / RSI > 70 overbought (`-1`)
+- Price crossing above MA20 (`+1`) / below MA20 (`-1`)
+- MACD bullish crossover (`+1`) / bearish crossover (`-1`)
+- Volume spike `>2x` average (`+1`)
+
+### Realism Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TAKER_FEE_PCT` | 0.04 | Taker fee per fill, % (Binance USDT-M default) |
+| `SLIPPAGE_BPS` | 2.0 | Slippage in basis points applied on each fill |
+
+Liquidation is approximated as `entry × (1 − 1/leverage + 0.005)` for longs (isolated margin, ~0.5% maintenance buffer). Stop-loss is automatically tightened above the liquidation price at order-open time.
 
 ## 📊 Project Structure
 
 ```
-crypto-trading-bot/
-├── main.py              # Main bot runner
-├── signal_generator.py  # Technical analysis
-├── paper_trader.py      # Paper trading engine
-├── telegram_bot.py      # Telegram integration
-├── config.py            # Configuration
-├── requirements.txt     # Dependencies
-├── .env                 # Environment variables
-└── logs/                # Trade logs
+future-simulasi/
+├── main.py              # Bot runner & loops
+├── signal_generator.py  # Technical analysis (uses closed candles)
+├── paper_trader.py      # Thread-safe paper engine w/ fees + slippage + liq
+├── screener.py          # Market screener (volume + composite score)
+├── tp_sl_calculator.py  # Dynamic TP/SL with min 1.5 R:R
+├── telegram_bot.py      # Telegram integration (HTML, timeouts)
+├── logging_config.py    # Centralized logging setup
+├── config.py            # All configuration via env vars
+├── requirements.txt     # Pinned runtime dependencies
+├── requirements-dev.txt # Dev tooling (pytest, ruff)
+├── pyproject.toml       # Lint/test config
+├── tests/               # Unit tests (pytest)
+├── .env                 # Your environment (gitignored)
+└── logs/                # Trade logs and bot.log
+```
+
+## 🧪 Tests & Lint
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+ruff check .
 ```
 
 ## 📈 Example Output

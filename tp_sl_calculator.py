@@ -1,157 +1,156 @@
 """
-Dynamic TP/SL Calculator
-Shared module for consistent TP/SL calculation across screener and signal generator
+Dynamic TP/SL Calculator.
+
+Shared module for consistent TP/SL calculation across screener and signal
+generator. Pure-function: takes a DataFrame and returns levels.
 """
 
-import pandas_ta as ta
+from __future__ import annotations
+
+import logging
+from typing import TypedDict
+
+import pandas_ta_classic as ta
+
+logger = logging.getLogger(__name__)
 
 
-def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
-    """
-    Calculate dynamic TP/SL based on technical levels
-    
-    Args:
-        df: DataFrame with OHLCV + indicators (must have bb_upper, bb_lower)
-        current_price: Current price
-        signal_type: 'BUY' or 'SELL'
-    
-    Returns:
-        dict with tp, sl, rr_ratio, tp_pct, sl_pct
+class Levels(TypedDict):
+    tp: float
+    sl: float
+    rr_ratio: float
+    tp_pct: float
+    sl_pct: float
+
+
+_MIN_RR = 1.5
+
+
+def _round_levels(tp: float, sl: float, current_price: float, is_bullish: bool) -> Levels:
+    if is_bullish:
+        tp_pct = ((tp - current_price) / current_price) * 100
+        sl_pct = ((current_price - sl) / current_price) * 100
+    else:
+        tp_pct = ((current_price - tp) / current_price) * 100
+        sl_pct = ((sl - current_price) / current_price) * 100
+
+    risk = abs(current_price - sl)
+    reward = abs(tp - current_price)
+    rr_ratio = (reward / risk) if risk > 0 else 1.0
+
+    return {
+        "tp": round(float(tp), 6),
+        "sl": round(float(sl), 6),
+        "rr_ratio": round(float(rr_ratio), 2),
+        "tp_pct": round(float(tp_pct), 2),
+        "sl_pct": round(float(sl_pct), 2),
+    }
+
+
+def calculate_dynamic_tp_sl(df, current_price: float, signal_type: str = "BUY") -> Levels:
+    """Calculate dynamic TP/SL based on technical levels.
+
+    Uses the closed candle (``iloc[-2]``) for indicators to avoid repainting
+    against the still-forming candle.
     """
     try:
-        # Get recent highs/lows (last 20 candles)
-        recent_high = df['high'].tail(20).max()
-        recent_low = df['low'].tail(20).min()
-        
-        # Bollinger Bands
-        bb_upper = df['bb_upper'].iloc[-1] if 'bb_upper' in df.columns else current_price * 1.02
-        bb_lower = df['bb_lower'].iloc[-1] if 'bb_lower' in df.columns else current_price * 0.98
-        
-        # ATR for volatility-based stops
-        atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
-        
-        # Determine direction based on signal type
-        # BUY/STRONG_BUY: Long (TP above, SL below)
-        # SELL: Short (TP below, SL above)
-        # HOLD/Other: Use market bias (price vs MA20)
-        
-        is_bullish = signal_type in ['BUY', 'STRONG_BUY']
-        is_bearish = signal_type == 'SELL'
+        # Use closed candle for indicator snapshots; fall back to last when
+        # only one candle is available.
+        idx = -2 if len(df) >= 2 else -1
 
-        # For HOLD, determine bias from price position
+        # Recent extremes excluding the in-progress candle.
+        closed_df = df.iloc[:idx] if idx == -2 else df
+        recent_high = float(closed_df["high"].tail(20).max())
+        recent_low = float(closed_df["low"].tail(20).min())
+
+        bb_upper = (
+            float(df["bb_upper"].iloc[idx])
+            if "bb_upper" in df.columns
+            else current_price * 1.02
+        )
+        bb_lower = (
+            float(df["bb_lower"].iloc[idx])
+            if "bb_lower" in df.columns
+            else current_price * 0.98
+        )
+
+        atr_series = ta.atr(df["high"], df["low"], df["close"], length=14)
+        atr_val = float(atr_series.iloc[idx]) if atr_series is not None else current_price * 0.01
+        if atr_val != atr_val or atr_val <= 0:  # NaN or non-positive
+            atr_val = current_price * 0.01
+
+        is_bullish = signal_type in {"BUY", "STRONG_BUY"}
+        is_bearish = signal_type == "SELL"
+
+        # HOLD: use price-vs-MA bias if available.
         if not is_bullish and not is_bearish:
-            ma_20 = df['ma_20'].iloc[-1] if 'ma_20' in df.columns else current_price
-            is_bullish = current_price > ma_20  # Above MA = bullish bias
-            is_bearish = current_price < ma_20  # Below MA = bearish bias
-            # Edge case: price == ma_20. Default to bullish bias so the
-            # rest of the function never references unbound tp/sl.
-            if not is_bullish and not is_bearish:
-                is_bullish = True
+            ma_20 = float(df["ma_20"].iloc[idx]) if "ma_20" in df.columns else current_price
+            is_bullish = current_price >= ma_20  # tie -> bullish bias
 
         if is_bullish:
-            # For BUY/Long: TP above, SL below
-            tp_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
-            if tp_candidates:
-                tp = min(tp_candidates)
-            else:
-                tp = current_price + (atr * 2)
-            
-            sl_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
-            if sl_candidates:
-                sl = max(sl_candidates)
-            else:
-                sl = current_price - atr
-            
-            # Calculate R:R
+            tp_candidates = [x for x in (recent_high, bb_upper) if x > current_price]
+            tp = min(tp_candidates) if tp_candidates else current_price + (atr_val * 2)
+
+            sl_candidates = [x for x in (recent_low, bb_lower) if x < current_price]
+            sl = max(sl_candidates) if sl_candidates else current_price - atr_val
+
             risk = current_price - sl
             reward = tp - current_price
-            
-            # Fallback if still invalid
+
             if risk <= 0 or reward <= 0:
-                tp = current_price * 1.05  # 5% TP
-                sl = current_price * 0.97  # 3% SL
+                tp = current_price * 1.05
+                sl = current_price * 0.97
                 risk = current_price - sl
                 reward = tp - current_price
-            
-            # Ensure minimum R:R of 1:1.5
-            rr_ratio = reward / risk if risk > 0 else 1.0
-            
-            if rr_ratio < 1.5:
-                # Adjust SL to achieve 1:1.5 R:R
-                required_risk = reward / 1.5
-                sl = current_price - required_risk
-                # Don't let SL go below recent low - 2%
-                min_sl = recent_low * 0.98
-                if sl < min_sl:
-                    # Instead, adjust TP
-                    tp = current_price + (risk * 1.5)
-                rr_ratio = 1.5
 
-        elif is_bearish:
-            # For SELL/Short: TP below, SL above
-            tp_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
-            if tp_candidates:
-                tp = max(tp_candidates)  # Closest support below
-            else:
-                tp = current_price - (atr * 2)
-            
-            sl_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
-            if sl_candidates:
-                sl = min(sl_candidates)  # Closest resistance above
-            else:
-                sl = current_price + atr
-            
+            rr_ratio = reward / risk
+            if rr_ratio < _MIN_RR:
+                # Try tightening SL first to achieve target R:R.
+                required_risk = reward / _MIN_RR
+                proposed_sl = current_price - required_risk
+                min_sl = recent_low * 0.98 if recent_low > 0 else proposed_sl
+                if proposed_sl >= min_sl:
+                    sl = proposed_sl
+                else:
+                    # Tightening would cross support; widen TP instead.
+                    tp = current_price + (risk * _MIN_RR)
+                # Important: reuse _round_levels so rr_ratio is recomputed
+                # from the *final* tp/sl rather than hardcoded.
+            return _round_levels(tp, sl, current_price, True)
+
+        # bearish branch (kept for completeness; bot is LONG-only)
+        tp_candidates = [x for x in (recent_low, bb_lower) if x < current_price]
+        tp = max(tp_candidates) if tp_candidates else current_price - (atr_val * 2)
+
+        sl_candidates = [x for x in (recent_high, bb_upper) if x > current_price]
+        sl = min(sl_candidates) if sl_candidates else current_price + atr_val
+
+        risk = sl - current_price
+        reward = current_price - tp
+        if risk <= 0 or reward <= 0:
+            tp = current_price * 0.95
+            sl = current_price * 1.03
             risk = sl - current_price
             reward = current_price - tp
-            
-            # Fallback if invalid
-            if risk <= 0 or reward <= 0:
-                tp = current_price * 0.95  # 5% below
-                sl = current_price * 1.03  # 3% above
-                risk = sl - current_price
-                reward = current_price - tp
-            
-            # Ensure minimum R:R of 1:1.5
-            rr_ratio = reward / risk if risk > 0 else 1.0
-            
-            if rr_ratio < 1.5:
-                required_risk = reward / 1.5
-                sl = current_price + required_risk
-                max_sl = recent_high * 1.02
-                if sl > max_sl:
-                    tp = current_price - (risk * 1.5)
-                rr_ratio = 1.5
-        
-        # Calculate percentages (positive for profit direction)
-        if is_bullish:
-            tp_pct = ((tp - current_price) / current_price) * 100  # Profit if price goes up
-            sl_pct = ((current_price - sl) / current_price) * 100  # Loss if price goes down
-        else:  # bearish
-            tp_pct = ((current_price - tp) / current_price) * 100  # Profit if price goes down
-            sl_pct = ((sl - current_price) / current_price) * 100  # Loss if price goes up
-        
-        return {
-            'tp': round(tp, 4),
-            'sl': round(sl, 4),
-            'rr_ratio': round(rr_ratio, 2),
-            'tp_pct': round(tp_pct, 2),
-            'sl_pct': round(sl_pct, 2)
-        }
-        
-    except Exception as e:
-        print(f"Error calculating TP/SL: {e}")
-        # Fallback to fixed percentages
-        if signal_type in ['BUY', 'STRONG_BUY']:
+
+        rr_ratio = reward / risk
+        if rr_ratio < _MIN_RR:
+            required_risk = reward / _MIN_RR
+            proposed_sl = current_price + required_risk
+            max_sl = recent_high * 1.02 if recent_high > 0 else proposed_sl
+            if proposed_sl <= max_sl:
+                sl = proposed_sl
+            else:
+                tp = current_price - (risk * _MIN_RR)
+
+        return _round_levels(tp, sl, current_price, False)
+
+    except Exception as exc:
+        logger.warning("Falling back to fixed TP/SL: %s", exc)
+        if signal_type in {"BUY", "STRONG_BUY"}:
             tp = current_price * 1.05
             sl = current_price * 0.95
-        else:
-            tp = current_price * 0.95
-            sl = current_price * 1.05
-        
-        return {
-            'tp': round(tp, 4),
-            'sl': round(sl, 4),
-            'rr_ratio': 1.0,
-            'tp_pct': 5.0,
-            'sl_pct': 5.0
-        }
+            return _round_levels(tp, sl, current_price, True)
+        tp = current_price * 0.95
+        sl = current_price * 1.05
+        return _round_levels(tp, sl, current_price, False)
