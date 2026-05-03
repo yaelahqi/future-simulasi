@@ -201,6 +201,42 @@ Stop-loss is automatically tightened *inside* the liquidation price at order-ope
 | Intra-candle SL trigger | candle `low ≤ SL` | candle `high ≥ SL` |
 | Intra-candle TP trigger | candle `high ≥ TP` | candle `low ≤ TP` |
 
+## 🧪 Backtest Harness
+
+A self-contained backtest engine lives in `backtest/`. It replays historical OHLCV through the **same** indicator + TP/SL + fee + slippage + liquidation logic the live paper trader uses, so results are an honest forward projection (not a re-implementation).
+
+Quick start:
+
+```bash
+# Backtest BTC/USDT 1h, all of 2024, default settings (matches live)
+python -m backtest --symbol BTC/USDT --exchange kucoin --timeframe 1h \
+  --start 2024-01-01 --end 2025-01-01 --initial-capital 1000 \
+  --out-dir runs/btc-2024 --plot
+
+# Or load from a local CSV (timestamp/open/high/low/close/volume):
+python -m backtest --csv data/btc.csv --out-dir runs/btc-csv
+```
+
+OHLCV is cached as CSV under `.backtest-cache/` keyed on (exchange, symbol, timeframe, range), so reruns are free.
+
+Useful flags:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--leverage` | 10 | Match live config |
+| `--position-size-pct` | 0.33 | Of total equity per trade |
+| `--taker-fee-pct` / `--slippage-bps` | 0.04 / 2.0 | Cost model |
+| `--funding-bps-per-8h` | 0 | Per-8h funding drag (e.g. `5.0` = 0.05%/8h) |
+| `--no-long` / `--no-short` | both on | Restrict to one side |
+| `--htf-filter-ma N` | off | Only LONG when close > MA(N), only SHORT when close < MA(N) |
+| `--warmup-bars` | 50 | Bars to skip before first entry (indicator stabilisation) |
+
+Output: a markdown metrics report on stdout (Sharpe, Sortino, max DD, profit factor, expectancy, win rate, avg R, CAGR) plus `equity.csv`, `trades.csv`, `metrics.json`, and optionally `equity.png` in `--out-dir`.
+
+The engine **does not look ahead**: signals are generated from bars `[0..t]` (closed at end of bar `t`) and entries fill at bar `t+1`'s open. End-of-data positions are force-closed at the last bar's close so equity is fully marked.
+
+> ⚠️ A baseline run on BTC/USDT 1h 2024 with default settings produced **−72.7%** total return / Sharpe **−1.33** / win rate **26%**. The strategy as shipped does not have an edge in 1h crypto; treat this harness as a tool to discover which parameter combinations *do* survive walk-forward / OOS testing, not a stamp of approval for the defaults.
+
 ## 📊 Project Structure
 
 ```

@@ -32,6 +32,10 @@ logs/
 .ruff_cache/
 *.egg-info/
 
+# Backtest artifacts
+.backtest-cache/
+runs/
+
 # OS
 .DS_Store
 Thumbs.db
