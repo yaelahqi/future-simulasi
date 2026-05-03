@@ -180,7 +180,26 @@ class TradingBot:
         if cmd in {"/positions", "/pos"}:
             with self._lock:
                 positions_copy = dict(self.trader.positions)
-            self.telegram.send_positions(positions_copy)
+            # Fetch live prices and compute unrealized PnL
+            live_pnls: dict[str, dict[str, float]] = {}
+            for sym in positions_copy:
+                try:
+                    ticker = self.signal_gen.exchange.fetch_ticker(sym)
+                    price = float(ticker["last"])
+                    pos = positions_copy[sym]
+                    pos_data = pos.to_dict() if hasattr(pos, "to_dict") else pos
+                    entry = float(pos_data["entry_price"])
+                    qty = float(pos_data["quantity"])
+                    side = "LONG" if pos_data["type"] == "BUY" else "SHORT"
+                    if side == "LONG":
+                        pnl = (price - entry) * qty
+                    else:
+                        pnl = (entry - price) * qty
+                    pnl_pct = (pnl / float(pos_data.get("margin", qty * entry))) * 100
+                    live_pnls[sym] = {"price": price, "pnl": pnl, "pnl_pct": pnl_pct}
+                except Exception as exc:
+                    logger.warning("Failed to fetch price for live PnL %s: %s", sym, exc)
+            self.telegram.send_positions(positions_copy, live_pnls)
             return
 
         if cmd in {"/pnl", "/p&l"}:

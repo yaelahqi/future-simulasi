@@ -95,33 +95,60 @@ class SignalGenerator:
 
         if latest["rsi"] < RSI_OVERSOLD:
             reasons.append(f"RSI oversold ({latest['rsi']:.1f})")
+            confidence += 2
+        elif latest["rsi"] < 40:
+            reasons.append(f"RSI low ({latest['rsi']:.1f})")
             confidence += 1
         elif latest["rsi"] > RSI_OVERBOUGHT:
             reasons.append(f"RSI overbought ({latest['rsi']:.1f})")
+            confidence -= 2
+        elif latest["rsi"] > 60:
+            reasons.append(f"RSI high ({latest['rsi']:.1f})")
             confidence -= 1
 
-        if latest["close"] > latest["ma_20"] and prev["close"] <= prev["ma_20"]:
-            reasons.append("Price crossed above MA20")
+        if latest["close"] > latest["ma_20"]:
+            if prev["close"] <= prev["ma_20"]:
+                reasons.append("Price crossed above MA20")
+            else:
+                reasons.append("Price above MA20")
             confidence += 1
-        elif latest["close"] < latest["ma_20"] and prev["close"] >= prev["ma_20"]:
-            reasons.append("Price crossed below MA20")
+        elif latest["close"] < latest["ma_20"]:
+            if prev["close"] >= prev["ma_20"]:
+                reasons.append("Price crossed below MA20")
+            else:
+                reasons.append("Price below MA20")
             confidence -= 1
 
         if "macd" in df.columns and "macd_signal" in df.columns:
-            if latest["macd"] > latest["macd_signal"] and prev["macd"] <= prev["macd_signal"]:
-                reasons.append("MACD bullish crossover")
+            if latest["macd"] > latest["macd_signal"]:
+                if prev["macd"] <= prev["macd_signal"]:
+                    reasons.append("MACD bullish crossover")
+                else:
+                    reasons.append("MACD bullish")
                 confidence += 1
-            elif latest["macd"] < latest["macd_signal"] and prev["macd"] >= prev["macd_signal"]:
-                reasons.append("MACD bearish crossover")
+            elif latest["macd"] < latest["macd_signal"]:
+                if prev["macd"] >= prev["macd_signal"]:
+                    reasons.append("MACD bearish crossover")
+                else:
+                    reasons.append("MACD bearish")
                 confidence -= 1
 
-        if latest["volume"] > latest["vol_sma"] * 2:
+        if latest["volume"] > latest["vol_sma"] * 1.5:
             reasons.append(f"Volume spike ({latest['volume']/latest['vol_sma']:.1f}x)")
             confidence += 1
 
+        # Momentum (5-candle lookback to align with screener)
+        prev_close = df["close"].iloc[-5] if len(df) >= 5 else df["close"].iloc[0]
+        momentum = (latest["close"] - prev_close) / prev_close if prev_close else 0
+        if momentum > 0.05:
+            reasons.append(f"Strong momentum (+{momentum*100:.1f}%)")
+            confidence += 1
+        elif momentum < -0.05:
+            reasons.append(f"Weak momentum ({momentum*100:.1f}%)")
+            confidence -= 1
+
         # Confidence thresholds:
-        # >= 3: STRONG_BUY, == 2: BUY, <= -2: SELL (executed as SHORT),
-        # otherwise HOLD.
+        # >= 3: STRONG_BUY, >= 2: BUY, <= -2: SELL, otherwise HOLD.
         if confidence >= 3:
             signal = "STRONG_BUY"
         elif confidence >= 2:

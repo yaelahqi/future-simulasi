@@ -202,13 +202,15 @@ class TelegramBot:
         text = f"⚠️ <b>ERROR ALERT</b>\n\n{esc(error_message)}\n\n<b>Time:</b> {esc(_utc_now_str())}"
         return self.send_message(text)
 
-    def send_positions(self, positions: dict[str, Any]) -> dict[str, Any] | None:
+    def send_positions(self, positions: dict[str, Any], live_pnls: dict[str, dict[str, float]] | None = None) -> dict[str, Any] | None:
+        live_pnls = live_pnls or {}
         if not positions:
             return self.send_message(
                 "📭 <b>NO OPEN POSITIONS</b>\n\nNo active trades.\nWaiting for new signals..."
             )
 
         lines = ["📊 <b>OPEN POSITIONS</b>", "", f"Total: {len(positions)} position(s)", ""]
+        total_live_pnl = 0.0
         for symbol, pos in positions.items():
             data = pos.to_dict() if hasattr(pos, "to_dict") else pos
             side = "LONG" if data["type"] == "BUY" else "SHORT"
@@ -219,6 +221,18 @@ class TelegramBot:
             tp = float(data["take_profit"])
             sl = float(data["stop_loss"])
             liq = float(data.get("liquidation_price", 0))
+            live = live_pnls.get(symbol, {})
+            cur_price = live.get("price")
+            pnl = live.get("pnl")
+            pnl_pct = live.get("pnl_pct")
+            pnl_line = ""
+            if pnl is not None:
+                sign = "+" if pnl >= 0 else ""
+                pnl_ico = "🟢" if pnl >= 0 else "🔴"
+                total_live_pnl += pnl
+                pnl_line = f"{pnl_ico} Live PnL: {sign}${pnl:.2f} ({sign}{pnl_pct:.1f}%)"
+                if cur_price:
+                    pnl_line += f" | Mark: ${cur_price:.4f}"
             lines.extend([
                 f"{ico} <b>{esc(symbol)}</b>",
                 f"Type: {side}",
@@ -226,9 +240,19 @@ class TelegramBot:
                 f"Size: ${size_usd:.2f} ({qty:.4f} coins)",
                 f"TP: ${tp:.4f} | SL: ${sl:.4f}",
                 f"Lev: {esc(data.get('leverage', 1))}x | Liq~: ${liq:.4f}",
+            ])
+            if pnl_line:
+                lines.append(pnl_line)
+            lines.extend([
                 f"Opened: {esc(data['opened_at'])}",
                 "",
             ])
+        # Summary line
+        if live_pnls:
+            sign = "+" if total_live_pnl >= 0 else ""
+            pnl_ico = "✅" if total_live_pnl >= 0 else "❌"
+            lines.append(f"<b>Total Live PnL:</b> {pnl_ico} {sign}${total_live_pnl:.2f}")
+            lines.append("")
         return self.send_message("\n".join(lines))
 
     def send_pnl(self, summary: dict[str, Any]) -> dict[str, Any] | None:
