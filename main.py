@@ -41,7 +41,7 @@ from config import (
 from paper_trader import PaperTrader
 from screener import CryptoScreener
 from signal_generator import SignalGenerator
-from telegram_bot import TelegramBot, esc
+from telegram_bot import TelegramBot, esc, _fmt_price
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -411,7 +411,7 @@ class TradingBot:
                 self.telegram.send_message(
                     "⚠️ <b>INSUFFICIENT CAPITAL</b>\n\n"
                     f"Signal: {esc(signal_type)} {esc(symbol)}\n"
-                    f"Price: ${current_price:.4f}\n\n{esc(msg)}"
+                    f"Price: {_fmt_price(current_price)}\n\n{esc(msg)}"
                 )
                 logger.warning("Cannot open %s: %s", symbol, msg)
             elif err == "RISK_RULE_VIOLATION":
@@ -422,7 +422,7 @@ class TradingBot:
             return
 
         self.telegram.send_position_opened(position)
-        logger.info("Opened position %s @ $%.4f", symbol, current_price)
+        logger.info("Opened position %s @ %s", symbol, _fmt_price(current_price))
 
     def check_open_positions(self) -> None:
         with self._lock:
@@ -545,16 +545,16 @@ class TradingBot:
             ico = "🟢" if pick["signal"] == "BUY" else ("🔴" if pick["signal"] == "SELL" else "🟡")
             lines.extend([
                 f"{i}. {ico} <b>{esc(pick['symbol'])}</b>",
-                f"   Price: ${float(pick['price']):.4f}",
+                f"   Price: {_fmt_price(float(pick['price']))}",
                 f"   RSI: {float(pick['rsi']):.1f} | Score: {esc(pick['score'])}",
                 f"   24h: {float(pick.get('change_24h', 0)):+.2f}%",
             ])
             if pick.get("tp") and pick.get("sl"):
                 lines.append(
-                    f"   TP: ${float(pick['tp']):.4f} (+{float(pick.get('tp_pct', 0)):.1f}%)"
+                    f"   TP: {_fmt_price(float(pick['tp']))} (+{float(pick.get('tp_pct', 0)):.1f}%)"
                 )
                 lines.append(
-                    f"   SL: ${float(pick['sl']):.4f} (-{float(pick.get('sl_pct', 0)):.1f}%)"
+                    f"   SL: {_fmt_price(float(pick['sl']))} (-{float(pick.get('sl_pct', 0)):.1f}%)"
                 )
                 if pick.get("rr_ratio"):
                     lines.append(f"   R:R: {esc(pick['rr_ratio'])}:1")
@@ -602,8 +602,8 @@ class TradingBot:
                         break
                     signal_data = self.signal_gen.generate_signal(symbol)
                     logger.info(
-                        "  %s: %s @ $%.4f", signal_data.get("symbol"),
-                        signal_data.get("signal"), signal_data.get("price", 0) or 0,
+                        "  %s: %s @ %s", signal_data.get("symbol"),
+                        signal_data.get("signal"), _fmt_price(signal_data.get("price", 0) or 0),
                     )
 
                     with self._lock:

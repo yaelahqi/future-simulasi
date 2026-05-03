@@ -30,6 +30,24 @@ def esc(value: Any) -> str:
     return html.escape(str(value), quote=False)
 
 
+def _fmt_price(value: float) -> str:
+    """Format price with adaptive decimals based on magnitude.
+
+    - >= $100   → 2 decimals  ($78500.01)
+    - >= $1     → 4 decimals  ($1.5930)
+    - >= $0.01  → 6 decimals  ($0.054700)
+    - <  $0.01  → 8 decimals  ($0.00001000)
+    """
+    v = float(value)
+    if v >= 100:
+        return f"${v:,.2f}"
+    if v >= 1:
+        return f"${v:,.4f}"
+    if v >= 0.01:
+        return f"${v:,.6f}"
+    return f"${v:,.8f}"
+
+
 class TelegramBot:
     def __init__(self, token: str | None = None, chat_id: str | None = None) -> None:
         self.token = token or TELEGRAM_BOT_TOKEN
@@ -94,7 +112,7 @@ class TelegramBot:
             "",
             f"<b>Symbol:</b> {symbol}",
             f"<b>Signal:</b> {sig}",
-            f"<b>Price:</b> ${price:.4f}",
+            f"<b>Price:</b> {_fmt_price(price)}",
             "",
             "<b>Technical Indicators:</b>",
             f"• RSI: {rsi:.1f}",
@@ -116,8 +134,8 @@ class TelegramBot:
             lines.extend([
                 "",
                 "📊 <b>Dynamic Levels:</b>",
-                f"• TP: ${tp:.4f} (+{tp_pct:.1f}%)",
-                f"• SL: ${sl:.4f} (-{sl_pct:.1f}%)",
+                f"• TP: {_fmt_price(tp)} (+{tp_pct:.1f}%)",
+                f"• SL: {_fmt_price(sl)} (-{sl_pct:.1f}%)",
                 f"• R:R: {rr_ratio}:1 {ok_emoji}",
             ])
 
@@ -137,15 +155,15 @@ class TelegramBot:
             "",
             f"<b>Symbol:</b> {esc(position['symbol'])}",
             f"<b>Type:</b> {side_ico} {side}",
-            f"<b>Entry:</b> ${float(position['entry_price']):.4f}",
+            f"<b>Entry:</b> {_fmt_price(float(position['entry_price']))}",
             f"<b>Size:</b> ${float(position['size_usd']):.2f} ({float(position['quantity']):.4f} coins)",
             f"<b>Margin:</b> ${float(position.get('margin', 0)):.2f}",
             f"<b>Leverage:</b> {esc(position.get('leverage', 1))}x",
             "",
             "<b>Targets:</b>",
-            f"• TP: ${float(position['take_profit']):.4f} {tp_type}",
-            f"• SL: ${float(position['stop_loss']):.4f}",
-            f"• Liq~: ${float(position.get('liquidation_price', 0)):.4f}",
+            f"• TP: {_fmt_price(float(position['take_profit']))} {tp_type}",
+            f"• SL: {_fmt_price(float(position['stop_loss']))}",
+            f"• Liq~: {_fmt_price(float(position.get('liquidation_price', 0)))}",
         ]
         if position.get("rr_ratio"):
             lines.append(f"<b>R:R Ratio:</b> {esc(position['rr_ratio'])}:1")
@@ -163,7 +181,7 @@ class TelegramBot:
             f"{ico} <b>POSITION CLOSED</b>",
             "",
             f"<b>Symbol:</b> {esc(position['symbol'])}",
-            f"<b>Exit:</b> ${float(position['exit_price']):.4f}",
+            f"<b>Exit:</b> {_fmt_price(float(position['exit_price']))}",
             f"<b>Reason:</b> {esc(position['close_reason'])}",
             "",
             f"<b>PnL (net):</b> {sign}${pnl:.4f} ({sign}{pnl_pct:.2f}% on margin)",
@@ -232,14 +250,14 @@ class TelegramBot:
                 total_live_pnl += pnl
                 pnl_line = f"{pnl_ico} Live PnL: {sign}${pnl:.2f} ({sign}{pnl_pct:.1f}%)"
                 if cur_price:
-                    pnl_line += f" | Mark: ${cur_price:.4f}"
+                    pnl_line += f" | Mark: {_fmt_price(cur_price)}"
             lines.extend([
                 f"{ico} <b>{esc(symbol)}</b>",
                 f"Type: {side}",
-                f"Entry: ${entry:.4f}",
+                f"Entry: {_fmt_price(entry)}",
                 f"Size: ${size_usd:.2f} ({qty:.4f} coins)",
-                f"TP: ${tp:.4f} | SL: ${sl:.4f}",
-                f"Lev: {esc(data.get('leverage', 1))}x | Liq~: ${liq:.4f}",
+                f"TP: {_fmt_price(tp)} | SL: {_fmt_price(sl)}",
+                f"Lev: {esc(data.get('leverage', 1))}x | Liq~: {_fmt_price(liq)}",
             ])
             if pnl_line:
                 lines.append(pnl_line)
@@ -303,8 +321,8 @@ class TelegramBot:
         text = (
             "📊 <b>TRAILING STOP UPDATE</b>\n\n"
             f"<b>Symbol:</b> {esc(update_data['symbol'])}\n"
-            f"<b>Old SL:</b> ${old_sl:.4f}\n"
-            f"<b>New SL:</b> ${new_sl:.4f}\n\n"
+            f"<b>Old SL:</b> {_fmt_price(old_sl)}\n"
+            f"<b>New SL:</b> {_fmt_price(new_sl)}\n\n"
             "<i>Profit locked automatically.</i>"
         )
         return self.send_message(text)
