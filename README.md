@@ -131,7 +131,7 @@ python main.py
 |----------|---------|-------------|
 | `MAX_POSITIONS` | 3 | Max concurrent positions |
 | `MAX_DAILY_LOSS_PCT` | 20.0 | Stop trading if -20% in a day |
-| `POSITION_SIZE_PCT` | 100.0 | % of capital per trade |
+| `POSITION_SIZE_PCT` | 33.0 | % of capital per trade (33% allows ~3 concurrent positions) |
 | `TRADING_ENABLED` | true | Global trading toggle |
 
 #### Take Profit / Stop Loss

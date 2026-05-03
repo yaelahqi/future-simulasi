@@ -50,6 +50,6 @@ TOP_N_COINS = int(os.getenv("TOP_N_COINS", 10))  # Track top 10 coins
 # ============= RISK MANAGEMENT =============
 MAX_POSITIONS = int(os.getenv("MAX_POSITIONS", 3))  # Max concurrent positions
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", 20.0))  # Stop if -20% in a day
-POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", 100.0))  # % of capital per trade
+POSITION_SIZE_PCT = float(os.getenv("POSITION_SIZE_PCT", 33.0))  # % of capital per trade (33% allows up to ~3 concurrent positions)
 MAX_LEVERAGE = int(os.getenv("MAX_LEVERAGE", 10))  # Hard cap on leverage
 TRADING_ENABLED = os.getenv("TRADING_ENABLED", "true").lower() == "true"  # Global trading toggle

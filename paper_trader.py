@@ -82,46 +82,48 @@ class PaperTrader:
             if current_price > position['entry_price']:
                 # Calculate profit percentage
                 profit_pct = (current_price - position['entry_price']) / position['entry_price']
-                
-                # If profit > 3%, move SL to breakeven
-                if profit_pct >= 0.03:
-                    new_sl = position['entry_price'] * 1.001  # Breakeven + tiny buffer
-                    if new_sl > position['stop_loss']:
-                        old_sl = position['stop_loss']
-                        position['stop_loss'] = new_sl
-                        position['trailing_stop_active'] = True
-                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
-                
-                # If profit > 5%, trail at 2% below current price
-                elif profit_pct >= 0.05:
+
+                # If profit >= 5%, trail at 2% below current price (highest priority)
+                if profit_pct >= 0.05:
                     new_sl = current_price * 0.98  # 2% trailing
                     if new_sl > position['stop_loss']:
                         old_sl = position['stop_loss']
                         position['stop_loss'] = new_sl
                         position['trailing_stop_active'] = True
                         return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
-        
-        else:  # SELL position
-            # For short positions, trail stop loss downward
-            if current_price < position['entry_price']:
-                profit_pct = (position['entry_price'] - current_price) / position['entry_price']
-                
-                if profit_pct >= 0.03:
-                    new_sl = position['entry_price'] * 0.999
-                    if new_sl < position['stop_loss']:
+
+                # If profit >= 3%, move SL to breakeven
+                elif profit_pct >= 0.03:
+                    new_sl = position['entry_price'] * 1.001  # Breakeven + tiny buffer
+                    if new_sl > position['stop_loss']:
                         old_sl = position['stop_loss']
                         position['stop_loss'] = new_sl
                         position['trailing_stop_active'] = True
                         return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
-                
-                elif profit_pct >= 0.05:
+
+        else:  # SELL position
+            # For short positions, trail stop loss downward
+            if current_price < position['entry_price']:
+                profit_pct = (position['entry_price'] - current_price) / position['entry_price']
+
+                # If profit >= 5%, trail at 2% above current price (highest priority)
+                if profit_pct >= 0.05:
                     new_sl = current_price * 1.02
                     if new_sl < position['stop_loss']:
                         old_sl = position['stop_loss']
                         position['stop_loss'] = new_sl
                         position['trailing_stop_active'] = True
                         return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
-        
+
+                # If profit >= 3%, move SL to breakeven
+                elif profit_pct >= 0.03:
+                    new_sl = position['entry_price'] * 0.999
+                    if new_sl < position['stop_loss']:
+                        old_sl = position['stop_loss']
+                        position['stop_loss'] = new_sl
+                        position['trailing_stop_active'] = True
+                        return {'symbol': symbol, 'old_sl': old_sl, 'new_sl': new_sl, 'type': 'trailing'}
+
         return None
     
     def open_position(self, symbol, entry_price, signal_type='BUY', tp=None, sl=None, rr_ratio=None):
@@ -222,7 +224,10 @@ class PaperTrader:
         else:  # SELL
             pnl = (position['entry_price'] - exit_price) * position['quantity']
         
-        pnl_pct = (pnl / self.capital) * 100
+        # Compute PnL relative to the position's margin (return on margin),
+        # not total portfolio capital. Guard against division by zero.
+        margin_basis = position.get('margin') or (position.get('size_usd', 0) / max(self.leverage, 1)) or 1
+        pnl_pct = (pnl / margin_basis) * 100
         
         # Update capital (release margin + PnL)
         margin_released = position.get('margin', position['size_usd'] / self.leverage)
@@ -318,11 +323,14 @@ class PaperTrader:
         state = {
             'capital': self.capital,
             'positions': self.positions,
-            'trade_history': self.trade_history
+            'trade_history': self.trade_history,
+            'locked_capital': self.locked_capital,
+            'daily_pnl': self.daily_pnl,
+            'last_reset_date': self.last_reset_date.isoformat(),
         }
         with open(filename, 'w') as f:
             json.dump(state, f, indent=2)
-    
+
     def load_state(self, filename='paper_trader_state.json'):
         """Load state from file"""
         if os.path.exists(filename):
@@ -331,6 +339,21 @@ class PaperTrader:
                 self.capital = state.get('capital', INITIAL_CAPITAL)
                 self.positions = state.get('positions', {})
                 self.trade_history = state.get('trade_history', [])
+                self.locked_capital = state.get('locked_capital', 0.0)
+                self.daily_pnl = state.get('daily_pnl', 0.0)
+                last_reset_str = state.get('last_reset_date')
+                if last_reset_str:
+                    try:
+                        self.last_reset_date = datetime.fromisoformat(last_reset_str).date()
+                    except (TypeError, ValueError):
+                        self.last_reset_date = datetime.now().date()
+                # Recompute locked_capital from positions if missing/stale to
+                # avoid drift after older state files without this field.
+                if 'locked_capital' not in state and self.positions:
+                    self.locked_capital = sum(
+                        p.get('margin', p.get('size_usd', 0) / max(self.leverage, 1))
+                        for p in self.positions.values()
+                    )
 
 
 # Test function

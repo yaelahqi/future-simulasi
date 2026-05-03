@@ -37,13 +37,17 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
         
         is_bullish = signal_type in ['BUY', 'STRONG_BUY']
         is_bearish = signal_type == 'SELL'
-        
+
         # For HOLD, determine bias from price position
         if not is_bullish and not is_bearish:
             ma_20 = df['ma_20'].iloc[-1] if 'ma_20' in df.columns else current_price
             is_bullish = current_price > ma_20  # Above MA = bullish bias
             is_bearish = current_price < ma_20  # Below MA = bearish bias
-        
+            # Edge case: price == ma_20. Default to bullish bias so the
+            # rest of the function never references unbound tp/sl.
+            if not is_bullish and not is_bearish:
+                is_bullish = True
+
         if is_bullish:
             # For BUY/Long: TP above, SL below
             tp_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
@@ -82,8 +86,8 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
                     # Instead, adjust TP
                     tp = current_price + (risk * 1.5)
                 rr_ratio = 1.5
-        
-        if is_bearish:
+
+        elif is_bearish:
             # For SELL/Short: TP below, SL above
             tp_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
             if tp_candidates:
