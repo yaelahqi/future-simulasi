@@ -30,22 +30,32 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
         # ATR for volatility-based stops
         atr = ta.atr(df['high'], df['low'], df['close'], length=14).iloc[-1]
         
-        if signal_type in ['BUY', 'STRONG_BUY']:
-            # For BUY: TP must be ABOVE current price, SL must be BELOW
-            # TP at resistance (recent high or BB upper)
+        # Determine direction based on signal type
+        # BUY/STRONG_BUY: Long (TP above, SL below)
+        # SELL: Short (TP below, SL above)
+        # HOLD/Other: Use market bias (price vs MA20)
+        
+        is_bullish = signal_type in ['BUY', 'STRONG_BUY']
+        is_bearish = signal_type == 'SELL'
+        
+        # For HOLD, determine bias from price position
+        if not is_bullish and not is_bearish:
+            ma_20 = df['ma_20'].iloc[-1] if 'ma_20' in df.columns else current_price
+            is_bullish = current_price > ma_20  # Above MA = bullish bias
+            is_bearish = current_price < ma_20  # Below MA = bearish bias
+        
+        if is_bullish:
+            # For BUY/Long: TP above, SL below
             tp_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
             if tp_candidates:
-                tp = min(tp_candidates)  # Conservative (closest resistance)
+                tp = min(tp_candidates)
             else:
-                # No resistance above, use ATR
                 tp = current_price + (atr * 2)
             
-            # SL at support (recent low or BB lower)
             sl_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
             if sl_candidates:
-                sl = max(sl_candidates)  # Conservative (closest support)
+                sl = max(sl_candidates)
             else:
-                # No support below, use ATR
                 sl = current_price - atr
             
             # Calculate R:R
@@ -73,20 +83,31 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
                     tp = current_price + (risk * 1.5)
                 rr_ratio = 1.5
         
-        else:  # SELL
-            # For SELL: TP at support, SL at resistance
-            tp = max(recent_low, bb_lower)
-            sl = min(recent_high, bb_upper)
+        if is_bearish:
+            # For SELL/Short: TP below, SL above
+            tp_candidates = [x for x in [recent_low, bb_lower] if x < current_price]
+            if tp_candidates:
+                tp = max(tp_candidates)  # Closest support below
+            else:
+                tp = current_price - (atr * 2)
+            
+            sl_candidates = [x for x in [recent_high, bb_upper] if x > current_price]
+            if sl_candidates:
+                sl = min(sl_candidates)  # Closest resistance above
+            else:
+                sl = current_price + atr
             
             risk = sl - current_price
             reward = current_price - tp
             
+            # Fallback if invalid
             if risk <= 0 or reward <= 0:
-                tp = current_price - (atr * 1.5)
-                sl = current_price + atr
+                tp = current_price * 0.95  # 5% below
+                sl = current_price * 1.03  # 3% above
                 risk = sl - current_price
                 reward = current_price - tp
             
+            # Ensure minimum R:R of 1:1.5
             rr_ratio = reward / risk if risk > 0 else 1.0
             
             if rr_ratio < 1.5:
@@ -97,9 +118,13 @@ def calculate_dynamic_tp_sl(df, current_price, signal_type='BUY'):
                     tp = current_price - (risk * 1.5)
                 rr_ratio = 1.5
         
-        # Calculate percentages
-        tp_pct = ((tp - current_price) / current_price) * 100 if signal_type in ['BUY', 'STRONG_BUY'] else ((current_price - tp) / current_price) * 100
-        sl_pct = ((current_price - sl) / current_price) * 100 if signal_type in ['BUY', 'STRONG_BUY'] else ((sl - current_price) / current_price) * 100
+        # Calculate percentages (positive for profit direction)
+        if is_bullish:
+            tp_pct = ((tp - current_price) / current_price) * 100  # Profit if price goes up
+            sl_pct = ((current_price - sl) / current_price) * 100  # Loss if price goes down
+        else:  # bearish
+            tp_pct = ((current_price - tp) / current_price) * 100  # Profit if price goes down
+            sl_pct = ((sl - current_price) / current_price) * 100  # Loss if price goes up
         
         return {
             'tp': round(tp, 4),
