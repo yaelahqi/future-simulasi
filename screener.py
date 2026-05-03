@@ -220,9 +220,14 @@ class CryptoScreener:
             latest = df.iloc[-1]
             current_price = latest['close']
             
+            # Determine signal first so TP/SL is calculated for the correct
+            # direction. Previously SELL signals fell through to 'HOLD' here,
+            # which made TP/SL direction depend on the price-vs-MA20 bias only.
+            signal = 'BUY' if score >= 2 else ('SELL' if score <= -2 else 'HOLD')
+
             # Calculate dynamic TP/SL using shared module
-            levels = calculate_dynamic_tp_sl(df, current_price, 'BUY' if score >= 2 else 'HOLD')
-            
+            levels = calculate_dynamic_tp_sl(df, current_price, signal)
+
             return {
                 'symbol': symbol,
                 'price': current_price,
@@ -231,7 +236,7 @@ class CryptoScreener:
                 'macd_signal': latest['macd_signal'],
                 'volume_24h': latest['volume'],
                 'score': score,
-                'signal': 'BUY' if score >= 2 else ('SELL' if score <= -2 else 'HOLD'),
+                'signal': signal,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 # Dynamic levels (from shared module)
                 'tp': levels['tp'],
