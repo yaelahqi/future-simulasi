@@ -20,6 +20,10 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
 
 # ============= EXCHANGE CONFIG =============
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "binance")  # e.g. binance, bybit, okx
+# Market type for ccxt: "future" (USDT-M perpetuals) matches the simulator's
+# fee/leverage/liquidation model. Override to "spot" only for testing on
+# spot OHLCV. Exchanges that don't honour defaultType ignore this value.
+MARKET_TYPE = os.getenv("MARKET_TYPE", "future")
 
 # ============= TRADING CONFIG =============
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "10.00"))  # USD

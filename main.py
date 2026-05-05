@@ -41,7 +41,7 @@ from config import (
 from paper_trader import PaperTrader
 from screener import CryptoScreener
 from signal_generator import SignalGenerator
-from telegram_bot import TelegramBot, esc, _fmt_price
+from telegram_bot import TelegramBot, _fmt_price, esc
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)

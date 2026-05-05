@@ -14,16 +14,22 @@ from typing import Any
 
 import ccxt
 import pandas as pd
-import pandas_ta_compat as ta
 
-from config import EXCHANGE_ID, RSI_OVERBOUGHT, RSI_OVERSOLD, SYMBOLS, TIMEFRAME
+import pandas_ta_compat as ta
+from config import EXCHANGE_ID, MARKET_TYPE, RSI_OVERBOUGHT, RSI_OVERSOLD, SYMBOLS, TIMEFRAME
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
 
 
-def _make_exchange(exchange_id: str = EXCHANGE_ID):
-    return getattr(ccxt, exchange_id)({"enableRateLimit": True})
+def _make_exchange(exchange_id: str = EXCHANGE_ID, market_type: str = MARKET_TYPE):
+    # Default to USDT-M perpetual futures so OHLCV/tickers match the
+    # simulator's fee/leverage/liquidation model. Spot OHLCV diverges from
+    # perpetual via funding-driven basis.
+    return getattr(ccxt, exchange_id)({
+        "enableRateLimit": True,
+        "options": {"defaultType": market_type},
+    })
 
 
 class SignalGenerator:
