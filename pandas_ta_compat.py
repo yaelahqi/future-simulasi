@@ -4,7 +4,6 @@ Maps pandas_ta function calls to ta library classes.
 """
 
 import ta as _ta
-import pandas as pd
 
 
 def rsi(close, length=14):

@@ -28,6 +28,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     src.add_argument("--symbol", type=str, help="Symbol to fetch via ccxt (e.g. BTC/USDT)")
 
     p.add_argument("--exchange", default="binance", help="ccxt exchange id (default: binance)")
+    p.add_argument("--market-type", default="future",
+                   help="ccxt market type: 'future' (USDT-M perpetuals, default) or 'spot'")
     p.add_argument("--timeframe", default="15m")
     p.add_argument("--start", type=str, help="Start ISO date (UTC), e.g. 2024-01-01")
     p.add_argument("--end", type=str, help="End ISO date (UTC), e.g. 2025-01-01")
@@ -65,7 +67,10 @@ def _load_data(args: argparse.Namespace) -> tuple[pd.DataFrame, str]:
         raise SystemExit("--symbol requires --start and --end")
     import ccxt
     exchange_cls = getattr(ccxt, args.exchange)
-    exchange = exchange_cls({"enableRateLimit": True})
+    exchange = exchange_cls({
+        "enableRateLimit": True,
+        "options": {"defaultType": args.market_type},
+    })
     df = fetch_ohlcv_via_ccxt(
         exchange,
         args.symbol,

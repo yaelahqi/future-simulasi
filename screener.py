@@ -14,9 +14,9 @@ from typing import Any
 
 import ccxt
 import pandas as pd
-import pandas_ta_compat as ta
 
-from config import EXCHANGE_ID, RSI_OVERBOUGHT, RSI_OVERSOLD, TIMEFRAME
+import pandas_ta_compat as ta
+from config import EXCHANGE_ID, MARKET_TYPE, RSI_OVERBOUGHT, RSI_OVERSOLD, TIMEFRAME
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -29,8 +29,13 @@ STABLECOIN_BASES: set[str] = {
 }
 
 
-def _make_exchange(exchange_id: str = EXCHANGE_ID):
-    return getattr(ccxt, exchange_id)({"enableRateLimit": True})
+def _make_exchange(exchange_id: str = EXCHANGE_ID, market_type: str = MARKET_TYPE):
+    # See signal_generator._make_exchange — default to perpetual futures so
+    # the screened universe and OHLCV match the simulator's market model.
+    return getattr(ccxt, exchange_id)({
+        "enableRateLimit": True,
+        "options": {"defaultType": market_type},
+    })
 
 
 class CryptoScreener:

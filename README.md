@@ -698,6 +698,9 @@ which python3
 ### Which exchanges are supported?
 **Any exchange supported by CCXT:** Binance, Bybit, OKX, Kraken, etc. Just change `EXCHANGE_ID` in `.env`.
 
+### Spot or futures market?
+The simulator's fee, leverage, and liquidation model assume **USDT-M perpetual futures**, so the bot defaults to `MARKET_TYPE=future` (ccxt `options.defaultType`). Override to `spot` only if you want to test the indicator pipeline against spot OHLCV — the simulated PnL will diverge from real perp PnL because of basis/funding.
+
 ### How accurate is paper trading?
 **Very accurate!** Bot uses real market prices from exchanges. The only difference is no real order execution.
 
