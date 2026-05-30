@@ -53,9 +53,10 @@ class CryptoScreener:
 
         filtered: list[dict[str, Any]] = []
         for symbol, ticker in tickers.items():
-            if not symbol.endswith(f"/{quote}"):
+            # Futures symbols: BTC/USDT:USDT  Spot: BTC/USDT
+            if f"/{quote}" not in symbol:
                 continue
-            base = symbol.replace(f"/{quote}", "")
+            base = symbol.split("/")[0]
             if base in STABLECOIN_BASES:
                 continue
             volume_usd = ticker.get("quoteVolume") or 0
@@ -183,8 +184,8 @@ class CryptoScreener:
                 analysis["change_24h"] = coin["change_24h"]
                 results.append(analysis)
 
-        results.sort(key=lambda x: x["score"], reverse=True)
-        return [r for r in results if r["score"] >= min_score]
+        results.sort(key=lambda x: abs(x["score"]), reverse=True)
+        return [r for r in results if abs(r["score"]) >= min_score]
 
     def get_top_picks(self, limit: int = 5, min_score: int = 2) -> list[dict[str, Any]]:
         scanned = self.scan_market(limit=50, min_score=min_score)

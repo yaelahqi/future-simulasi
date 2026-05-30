@@ -18,18 +18,23 @@ from threading import RLock
 from typing import Any
 
 from config import (
+    AGGRESSIVE_TRAIL_BREAKEVEN_PCT,
+    AGGRESSIVE_TRAIL_DISTANCE_PCT,
+    AGGRESSIVE_TRAIL_LOCK_PCT,
     INITIAL_CAPITAL,
     LEVERAGE,
     LOG_FILE,
     MAX_DAILY_LOSS_PCT,
     MAX_LEVERAGE,
     MAX_POSITIONS,
+    MAX_SAME_DIRECTION,
     POSITION_SIZE_PCT,
     SLIPPAGE_BPS,
     STATE_FILE,
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
     TAKER_FEE_PCT,
+    TRADING_MODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,6 +159,7 @@ class PaperTrader:
         self.day_start_equity: float = INITIAL_CAPITAL
         self.last_reset_date = _utc_today()
         self.max_positions: int = MAX_POSITIONS
+        self.max_same_direction: int = MAX_SAME_DIRECTION
         self.position_size_pct: float = POSITION_SIZE_PCT / 100.0
         self.max_daily_loss_pct: float = MAX_DAILY_LOSS_PCT
         self._lock = RLock()
@@ -203,6 +209,15 @@ class PaperTrader:
 
             return True, "OK"
 
+    def can_open_direction(self, position_type: str) -> tuple[bool, str]:
+        """Limit same-direction stacking: BUY=LONG, SELL=SHORT."""
+        with self._lock:
+            same = sum(1 for p in self.positions.values() if p.type == position_type)
+            if same >= self.max_same_direction:
+                side = "LONG" if position_type == "BUY" else "SHORT"
+                return False, f"Max same-direction positions reached ({side}: {same}/{self.max_same_direction})"
+            return True, "OK"
+
     def open_position(
         self,
         symbol: str,
@@ -238,6 +253,11 @@ class PaperTrader:
             if symbol in self.positions:
                 return {"error": "DUPLICATE_POSITION",
                         "message": f"Position already open for {symbol}",
+                        "symbol": symbol, "signal": signal_type}
+
+            ok_dir, reason_dir = self.can_open_direction(position_type)
+            if not ok_dir:
+                return {"error": "RISK_RULE_VIOLATION", "message": reason_dir,
                         "symbol": symbol, "signal": signal_type}
 
             # Sizing is based on TOTAL equity so the percentage is honored
@@ -324,14 +344,22 @@ class PaperTrader:
                 return None
 
             new_sl: float | None = None
+            breakeven_threshold = 0.03
+            lock_threshold = 0.05
+            trail_distance = 0.02
+            if TRADING_MODE == "aggressive":
+                breakeven_threshold = AGGRESSIVE_TRAIL_BREAKEVEN_PCT
+                lock_threshold = AGGRESSIVE_TRAIL_LOCK_PCT
+                trail_distance = AGGRESSIVE_TRAIL_DISTANCE_PCT
+
             if position.type == "BUY":
                 # Profit only when price moved above entry.
                 if current_price <= entry:
                     return None
                 profit_pct = (current_price - entry) / entry
-                if profit_pct >= 0.05:
-                    new_sl = current_price * 0.98  # 2% below current price
-                elif profit_pct >= 0.03:
+                if profit_pct >= lock_threshold:
+                    new_sl = current_price * (1 - trail_distance)
+                elif profit_pct >= breakeven_threshold:
                     new_sl = entry * 1.001  # breakeven + tiny buffer
                 if new_sl is None or new_sl <= position.stop_loss:
                     return None
@@ -340,9 +368,9 @@ class PaperTrader:
                 if current_price >= entry:
                     return None
                 profit_pct = (entry - current_price) / entry
-                if profit_pct >= 0.05:
-                    new_sl = current_price * 1.02  # 2% above current price
-                elif profit_pct >= 0.03:
+                if profit_pct >= lock_threshold:
+                    new_sl = current_price * (1 + trail_distance)
+                elif profit_pct >= breakeven_threshold:
                     new_sl = entry * 0.999  # breakeven - tiny buffer
                 if new_sl is None or new_sl >= position.stop_loss:
                     return None

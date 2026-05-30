@@ -48,6 +48,11 @@ def _fmt_price(value: float) -> str:
     return f"${v:,.8f}"
 
 
+def _display_symbol(symbol: str) -> str:
+    """Strip futures suffix for display: BTC/USDT:USDT → BTC/USDT"""
+    return symbol.split(":")[0]
+
+
 class TelegramBot:
     def __init__(self, token: str | None = None, chat_id: str | None = None) -> None:
         self.token = token or TELEGRAM_BOT_TOKEN
@@ -102,6 +107,7 @@ class TelegramBot:
         ico = emoji.get(signal_data.get("signal"), "⚪")
         symbol = esc(signal_data.get("symbol", ""))
         sig = esc(signal_data.get("signal", ""))
+        side = "SHORT" if signal_data.get("signal") == "SELL" else ("LONG" if signal_data.get("signal") in {"BUY", "STRONG_BUY"} else "NONE")
         price = float(signal_data.get("price", 0) or 0)
         rsi = float(signal_data.get("rsi", 0) or 0)
         macd = float(signal_data.get("macd", 0) or 0)
@@ -110,8 +116,9 @@ class TelegramBot:
         lines = [
             f"{ico} <b>TRADING SIGNAL</b> {ico}",
             "",
-            f"<b>Symbol:</b> {symbol}",
+            f"<b>Symbol:</b> {_display_symbol(symbol)}",
             f"<b>Signal:</b> {sig}",
+            f"<b>Side:</b> {side}",
             f"<b>Price:</b> {_fmt_price(price)}",
             "",
             "<b>Technical Indicators:</b>",
@@ -134,10 +141,13 @@ class TelegramBot:
             lines.extend([
                 "",
                 "📊 <b>Dynamic Levels:</b>",
-                f"• TP: {_fmt_price(tp)} (+{tp_pct:.1f}%)",
-                f"• SL: {_fmt_price(sl)} (-{sl_pct:.1f}%)",
+                f"• TP: {_fmt_price(tp)} ({tp_pct:.1f}%)",
+                f"• SL: {_fmt_price(sl)} ({sl_pct:.1f}%)",
                 f"• R:R: {rr_ratio}:1 {ok_emoji}",
             ])
+
+        if signal_data.get("btc_regime"):
+            lines.extend(["", f"<b>BTC Regime:</b> {esc(signal_data.get('btc_regime'))}"])
 
         lines.append("")
         lines.append(f"<b>Time:</b> {esc(signal_data.get('timestamp', _utc_now_str()))}")
@@ -153,7 +163,7 @@ class TelegramBot:
         lines = [
             f"💼 <b>POSITION OPENED</b> {tp_type}",
             "",
-            f"<b>Symbol:</b> {esc(position['symbol'])}",
+            f"<b>Symbol:</b> {_display_symbol(esc(position['symbol']))}\n",
             f"<b>Type:</b> {side_ico} {side}",
             f"<b>Entry:</b> {_fmt_price(float(position['entry_price']))}",
             f"<b>Size:</b> ${float(position['size_usd']):.2f} ({float(position['quantity']):.4f} coins)",
@@ -180,7 +190,7 @@ class TelegramBot:
         lines = [
             f"{ico} <b>POSITION CLOSED</b>",
             "",
-            f"<b>Symbol:</b> {esc(position['symbol'])}",
+            f"<b>Symbol:</b> {_display_symbol(esc(position['symbol']))}\n",
             f"<b>Exit:</b> {_fmt_price(float(position['exit_price']))}",
             f"<b>Reason:</b> {esc(position['close_reason'])}",
             "",
@@ -252,7 +262,7 @@ class TelegramBot:
                 if cur_price:
                     pnl_line += f" | Mark: {_fmt_price(cur_price)}"
             lines.extend([
-                f"{ico} <b>{esc(symbol)}</b>",
+                f"{ico} <b>{_display_symbol(esc(symbol))}</b>",
                 f"Type: {side}",
                 f"Entry: {_fmt_price(entry)}",
                 f"Size: ${size_usd:.2f} ({qty:.4f} coins)",
@@ -320,7 +330,7 @@ class TelegramBot:
         new_sl = float(update_data["new_sl"])
         text = (
             "📊 <b>TRAILING STOP UPDATE</b>\n\n"
-            f"<b>Symbol:</b> {esc(update_data['symbol'])}\n"
+            f"<b>Symbol:</b> {_display_symbol(esc(position['symbol']))}\n",
             f"<b>Old SL:</b> {_fmt_price(old_sl)}\n"
             f"<b>New SL:</b> {_fmt_price(new_sl)}\n\n"
             "<i>Profit locked automatically.</i>"

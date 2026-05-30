@@ -16,7 +16,21 @@ import ccxt
 import pandas as pd
 
 import pandas_ta_compat as ta
-from config import EXCHANGE_ID, MARKET_TYPE, RSI_OVERBOUGHT, RSI_OVERSOLD, SYMBOLS, TIMEFRAME
+from config import (
+    API_KEY,
+    API_SECRET,
+    BTC_REGIME_CHECK,
+    BTC_REGIME_SYMBOL,
+    BTC_REGIME_TIMEFRAME,
+    EXCHANGE_ID,
+    FUNDING_RATE_CHECK,
+    MARKET_TYPE,
+    MAX_ADVERSE_FUNDING_RATE,
+    RSI_OVERBOUGHT,
+    RSI_OVERSOLD,
+    SYMBOLS,
+    TIMEFRAME,
+)
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -26,10 +40,14 @@ def _make_exchange(exchange_id: str = EXCHANGE_ID, market_type: str = MARKET_TYP
     # Default to USDT-M perpetual futures so OHLCV/tickers match the
     # simulator's fee/leverage/liquidation model. Spot OHLCV diverges from
     # perpetual via funding-driven basis.
-    return getattr(ccxt, exchange_id)({
+    cfg = {
         "enableRateLimit": True,
         "options": {"defaultType": market_type},
-    })
+    }
+    if API_KEY and API_SECRET:
+        cfg["apiKey"] = API_KEY
+        cfg["secret"] = API_SECRET
+    return getattr(ccxt, exchange_id)(cfg)
 
 
 class SignalGenerator:
@@ -37,6 +55,72 @@ class SignalGenerator:
         # Allow caller to inject a shared ccxt instance to avoid duplicate
         # rate limiters across modules.
         self.exchange = exchange if exchange is not None else _make_exchange()
+        self._btc_regime_cache: dict[str, Any] = {"ts": 0.0, "regime": "unknown"}
+        self._funding_cache: dict[str, dict[str, Any]] = {}
+
+    def get_funding_rate(self, symbol: str, ttl_seconds: int = 300) -> float | None:
+        """Return current funding rate as decimal (0.0001 = 0.01%)."""
+        import time
+
+        if not FUNDING_RATE_CHECK:
+            return None
+        now = time.time()
+        cached = self._funding_cache.get(symbol)
+        if cached and now - float(cached.get("ts", 0.0)) < ttl_seconds:
+            return cached.get("rate")
+        try:
+            data = self.exchange.fetch_funding_rate(symbol)
+            raw = data.get("fundingRate") if isinstance(data, dict) else None
+            rate = float(raw) if raw is not None else None
+        except Exception as exc:
+            logger.debug("Funding rate check failed for %s: %s", symbol, exc)
+            rate = None
+        self._funding_cache[symbol] = {"ts": now, "rate": rate}
+        return rate
+
+    @staticmethod
+    def is_funding_adverse(signal_type: str, funding_rate: float | None) -> tuple[bool, str]:
+        """Return True when funding cost is too expensive for intended side."""
+        if funding_rate is None or not FUNDING_RATE_CHECK:
+            return False, "unknown"
+        side = "LONG" if signal_type in {"BUY", "STRONG_BUY"} else ("SHORT" if signal_type == "SELL" else "NONE")
+        threshold = abs(MAX_ADVERSE_FUNDING_RATE)
+        if side == "LONG" and funding_rate > threshold:
+            return True, f"LONG pays high funding ({funding_rate * 100:.4f}%)"
+        if side == "SHORT" and funding_rate < -threshold:
+            return True, f"SHORT pays high funding ({funding_rate * 100:.4f}%)"
+        return False, f"{funding_rate * 100:.4f}%"
+
+    def get_btc_regime(self, ttl_seconds: int = 900) -> str:
+        """Return BTC 4H regime: bullish, bearish, neutral, or unknown."""
+        import time
+
+        now = time.time()
+        if now - float(self._btc_regime_cache.get("ts", 0.0)) < ttl_seconds:
+            return str(self._btc_regime_cache.get("regime", "unknown"))
+        try:
+            df = self.fetch_ohlcv(BTC_REGIME_SYMBOL, timeframe=BTC_REGIME_TIMEFRAME, limit=60)
+            if df is None or len(df) < 25:
+                regime = "unknown"
+            else:
+                ema9 = ta.ema(df["close"], length=9)
+                ema21 = ta.ema(df["close"], length=21)
+                if ema9 is None or ema21 is None:
+                    regime = "unknown"
+                else:
+                    e9 = float(ema9.iloc[-1])
+                    e21 = float(ema21.iloc[-1])
+                    if e9 > e21 * 1.001:
+                        regime = "bullish"
+                    elif e9 < e21 * 0.999:
+                        regime = "bearish"
+                    else:
+                        regime = "neutral"
+        except Exception as exc:
+            logger.warning("BTC regime check failed: %s", exc)
+            regime = "unknown"
+        self._btc_regime_cache = {"ts": now, "regime": regime}
+        return regime
 
     def fetch_ohlcv(self, symbol: str, timeframe: str = TIMEFRAME, limit: int = 100) -> pd.DataFrame | None:
         """Fetch OHLCV bars and drop the in-progress candle.
@@ -153,6 +237,8 @@ class SignalGenerator:
             reasons.append(f"Weak momentum ({momentum*100:.1f}%)")
             confidence -= 1
 
+        btc_regime = self.get_btc_regime() if BTC_REGIME_CHECK else "disabled"
+
         # Confidence thresholds:
         # >= 3: STRONG_BUY, >= 2: BUY, <= -2: SELL, otherwise HOLD.
         if confidence >= 3:
@@ -164,7 +250,16 @@ class SignalGenerator:
         else:
             signal = "HOLD"
 
-        return _build_signal_dict(symbol, signal, latest, df, reasons, confidence)
+        if BTC_REGIME_CHECK and btc_regime == "bearish" and signal in {"BUY", "STRONG_BUY"}:
+            reasons.append("BTC 4H bearish regime blocks LONG")
+            signal = "HOLD"
+        elif BTC_REGIME_CHECK and btc_regime == "bullish" and signal == "SELL":
+            reasons.append("BTC 4H bullish regime blocks SHORT")
+            signal = "HOLD"
+
+        result = _build_signal_dict(symbol, signal, latest, df, reasons, confidence)
+        result["btc_regime"] = btc_regime
+        return result
 
     def generate_signal(self, symbol: str) -> dict[str, Any]:
         df = self.fetch_ohlcv(symbol)

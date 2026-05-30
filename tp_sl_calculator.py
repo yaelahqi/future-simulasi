@@ -11,6 +11,7 @@ import logging
 from typing import TypedDict
 
 import pandas_ta_compat as ta
+from config import AGGRESSIVE_TP_MULTIPLIER, TRADING_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,12 @@ _MIN_RR = 1.5
 
 
 def _round_levels(tp: float, sl: float, current_price: float, is_bullish: bool) -> Levels:
+    if TRADING_MODE == "aggressive" and AGGRESSIVE_TP_MULTIPLIER > 1:
+        # Aggressive v1: keep SL unchanged, extend only reward distance.
+        # This lets winners run longer while preserving the original risk.
+        reward = abs(tp - current_price) * AGGRESSIVE_TP_MULTIPLIER
+        tp = current_price + reward if is_bullish else current_price - reward
+
     if is_bullish:
         tp_pct = ((tp - current_price) / current_price) * 100
         sl_pct = ((current_price - sl) / current_price) * 100

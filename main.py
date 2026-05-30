@@ -23,7 +23,13 @@ from config import (
     BLACKLIST_DURATION,
     COMMAND_INTERVAL,
     HTTP_TIMEOUT,  # noqa: F401  (used via TelegramBot)
+    FUNDING_RATE_CHECK,
     POSITION_CHECK_INTERVAL,
+    REAL_TRADING_ENABLED,
+    REAL_CONFIRM_FILE,
+    REAL_MAX_LEVERAGE,
+    REAL_MAX_POSITIONS,
+    REAL_POSITION_SIZE_PCT,
     SCAN_INTERVAL,
     SCREENING_COOLDOWN,
     SCREENING_ENABLED,
@@ -39,9 +45,10 @@ from config import (
     TRADING_ENABLED,
 )
 from paper_trader import PaperTrader
+from real_trader import RealTrader
 from screener import CryptoScreener
 from signal_generator import SignalGenerator
-from telegram_bot import TelegramBot, _fmt_price, esc
+from telegram_bot import TelegramBot, _fmt_price, _display_symbol, esc
 from tp_sl_calculator import calculate_dynamic_tp_sl
 
 logger = logging.getLogger(__name__)
@@ -93,11 +100,13 @@ class TradingBot:
             if SCREENING_ENABLED
             else None
         )
-        self.trader = PaperTrader()
+        self.real_mode = REAL_TRADING_ENABLED
+        self.trader = RealTrader(self.signal_gen.exchange) if self.real_mode else PaperTrader()
         self.telegram = TelegramBot()
 
         self._shutdown = threading.Event()
         self.last_signal_time: dict[str, float] = {}
+        self.rejection_stats: dict[str, int] = {}
         self.scan_interval = SCAN_INTERVAL
         self.position_check_interval = POSITION_CHECK_INTERVAL
         self.active_symbols: list[str] = list(SYMBOLS) if not SCREENING_ENABLED else []
@@ -214,6 +223,29 @@ class TradingBot:
             self.telegram.send_portfolio_summary(summary)
             return
 
+        if cmd == "/realstatus":
+            if not self.real_mode:
+                self.telegram.send_control_response("REALSTATUS", True, "Real mode OFF. Bot is paper trading.")
+                return
+            ok, msg = self.trader.safety_ready()
+            self.telegram.send_control_response(
+                "REALSTATUS", ok,
+                f"Real mode ON\nSafety: {msg}\nConfirm file: {REAL_CONFIRM_FILE}\nMax leverage: {REAL_MAX_LEVERAGE}x\nMax positions: {REAL_MAX_POSITIONS}\nPosition size: {REAL_POSITION_SIZE_PCT:.1f}% free balance",
+            )
+            return
+
+        if cmd in {"/rejects", "/rejections"}:
+            with self._lock:
+                stats = dict(self.rejection_stats)
+            if not stats:
+                self.telegram.send_message("📭 <b>NO REJECTIONS</b>\n\nNo skipped signals recorded yet.")
+            else:
+                lines = ["🧾 <b>SIGNAL REJECTIONS</b>", ""]
+                for reason, count in sorted(stats.items(), key=lambda x: x[1], reverse=True):
+                    lines.append(f"• {esc(reason)}: {count}")
+                self.telegram.send_message("\n".join(lines))
+            return
+
         if cmd in {"/start", "/help"}:
             self.telegram.send_message(self._help_text())
             return
@@ -251,6 +283,9 @@ class TradingBot:
             return
 
         if cmd == "/reset":
+            if self.real_mode:
+                self.telegram.send_control_response("RESET", False, "Reset disabled in real mode. Use /closeall confirm only.")
+                return
             self._handle_destructive("/reset", text, self._do_reset,
                                      "This will close ALL positions AND reset capital.")
             return
@@ -274,7 +309,9 @@ class TradingBot:
             "📊 <b>Portfolio:</b>\n"
             "• /positions — View open positions\n"
             "• /pnl — View P&amp;L summary\n"
-            "• /status — Portfolio overview\n\n"
+            "• /status — Portfolio overview\n"
+            "• /realstatus — Real-mode safety status\n"
+            "• /rejects — Signal rejection stats\n\n"
             "🎮 <b>Control:</b>\n"
             "• /pause — Pause trading (no new positions)\n"
             "• /resume — Resume trading\n"
@@ -305,6 +342,12 @@ class TradingBot:
         if "/" not in sym:
             sym = f"{sym}/USDT"
         with self._lock:
+            # Accept /close SOL, /close SOL/USDT, or full futures symbol.
+            if sym not in self.trader.positions:
+                futures_sym = f"{sym}:USDT" if ":" not in sym else sym
+                if futures_sym in self.trader.positions:
+                    sym = futures_sym
+        with self._lock:
             has_position = sym in self.trader.positions
         if not has_position:
             self.telegram.send_control_response("CLOSE", False, f"No open position for {sym}")
@@ -313,6 +356,7 @@ class TradingBot:
             ticker = self.signal_gen.exchange.fetch_ticker(sym)
             with self._lock:
                 result = self.trader.close_position(sym, float(ticker["last"]), "MANUAL")
+                self.trader.save_state()
             self.telegram.send_position_closed(result)
             logger.info("Manually closed %s", sym)
         except Exception as exc:
@@ -335,6 +379,8 @@ class TradingBot:
             except Exception as exc:
                 logger.warning("Failed to close %s: %s", sym, exc)
                 failed.append(sym)
+        with self._lock:
+            self.trader.save_state()
         msg = f"Closed {closed} position(s)"
         if failed:
             msg += f"; failed: {', '.join(failed)}"
@@ -353,6 +399,12 @@ class TradingBot:
 
     # ------------------------------ trading ------------------------------ #
 
+    def record_rejection(self, reason: str, symbol: str = "", signal_type: str = "") -> None:
+        """Track why signals are skipped; log only, no Telegram spam."""
+        with self._lock:
+            self.rejection_stats[reason] = self.rejection_stats.get(reason, 0) + 1
+        logger.debug("Rejected signal reason=%s symbol=%s signal=%s", reason, _display_symbol(symbol), signal_type)
+
     def process_signal(self, signal_data: dict[str, Any]) -> None:
         symbol = signal_data["symbol"]
         signal_type = signal_data["signal"]
@@ -362,21 +414,24 @@ class TradingBot:
         if base in {"USDT", "USDC", "FDUSD", "TUSD", "BUSD", "DAI", "EUR",
                     "USDD", "USDP", "SUSD", "GUSD", "USDe", "USD1", "PYUSD",
                     "AEUR", "EURI", "CUSD", "CEUR"}:
-            logger.debug("Skipping stablecoin signal: %s", symbol)
+            self.record_rejection("stablecoin", symbol, signal_type)
+            logger.debug("Skipping stablecoin signal: %s", _display_symbol(symbol))
             return
 
         # Silent reject: low confidence signals (only STRONG_BUY / strong SELL).
         confidence = signal_data.get("confidence", 0)
         if abs(confidence) < 3:
-            logger.debug("Low confidence (%d) for %s, silently skipping", confidence, symbol)
+            self.record_rejection("low_confidence", symbol, signal_type)
+            logger.debug("Low confidence (%d) for %s, silently skipping", confidence, _display_symbol(symbol))
             return
 
         # Silent reject: don't spam signals when max positions reached.
         with self._lock:
             max_pos_reached = len(self.trader.positions) >= self.trader.max_positions
         if max_pos_reached and signal_type in {"BUY", "STRONG_BUY", "SELL"}:
+            self.record_rejection("max_positions", symbol, signal_type)
             logger.debug("Max positions reached (%d/%d), silently skipping %s %s",
-                         len(self.trader.positions), self.trader.max_positions, symbol, signal_type)
+                         len(self.trader.positions), self.trader.max_positions, _display_symbol(symbol), signal_type)
             return
 
         # Notify on actionable signals only to avoid spam on HOLDs.
@@ -388,13 +443,25 @@ class TradingBot:
             has_position = symbol in self.trader.positions
 
         if not trading_on:
+            self.record_rejection("trading_disabled", symbol, signal_type)
             logger.debug("Trading disabled, not opening %s", symbol)
             return
 
         if signal_type not in {"BUY", "STRONG_BUY", "SELL"}:
+            self.record_rejection("not_actionable", symbol, signal_type)
             return
 
+        if FUNDING_RATE_CHECK:
+            funding_rate = self.signal_gen.get_funding_rate(symbol)
+            funding_bad, funding_info = self.signal_gen.is_funding_adverse(signal_type, funding_rate)
+            signal_data["funding_rate"] = funding_rate
+            if funding_bad:
+                self.record_rejection("adverse_funding", symbol, signal_type)
+                logger.info("Skipping %s %s: %s", _display_symbol(symbol), signal_type, funding_info)
+                return
+
         if has_position:
+            self.record_rejection("already_position", symbol, signal_type)
             logger.debug("Already have position for %s, skipping", symbol)
             return
 
@@ -424,11 +491,12 @@ class TradingBot:
             if err == "INSUFFICIENT_CAPITAL":
                 self.telegram.send_message(
                     "⚠️ <b>INSUFFICIENT CAPITAL</b>\n\n"
-                    f"Signal: {esc(signal_type)} {esc(symbol)}\n"
+                    f"Signal: {esc(signal_type)} {_display_symbol(symbol)}\n"
                     f"Price: {_fmt_price(current_price)}\n\n{esc(msg)}"
                 )
                 logger.warning("Cannot open %s: %s", symbol, msg)
             elif err == "RISK_RULE_VIOLATION":
+                self.record_rejection("risk_rule", symbol, signal_type)
                 self.telegram.send_risk_alert("warning", msg)
                 logger.warning("Risk rule violation for %s: %s", symbol, msg)
             else:
@@ -436,7 +504,7 @@ class TradingBot:
             return
 
         self.telegram.send_position_opened(position)
-        logger.info("Opened position %s @ %s", symbol, _fmt_price(current_price))
+        logger.info("Opened position %s @ %s", _display_symbol(symbol), _fmt_price(current_price))
 
     def check_open_positions(self) -> None:
         with self._lock:
@@ -565,10 +633,10 @@ class TradingBot:
             ])
             if pick.get("tp") and pick.get("sl"):
                 lines.append(
-                    f"   TP: {_fmt_price(float(pick['tp']))} (+{float(pick.get('tp_pct', 0)):.1f}%)"
+                    f"   TP: {_fmt_price(float(pick['tp']))} ({float(pick.get('tp_pct', 0)):.1f}%)"
                 )
                 lines.append(
-                    f"   SL: {_fmt_price(float(pick['sl']))} (-{float(pick.get('sl_pct', 0)):.1f}%)"
+                    f"   SL: {_fmt_price(float(pick['sl']))} ({float(pick.get('sl_pct', 0)):.1f}%)"
                 )
                 if pick.get("rr_ratio"):
                     lines.append(f"   R:R: {esc(pick['rr_ratio'])}:1")
@@ -616,7 +684,7 @@ class TradingBot:
                         break
                     signal_data = self.signal_gen.generate_signal(symbol)
                     logger.info(
-                        "  %s: %s @ %s", signal_data.get("symbol"),
+                        "  %s: %s @ %s", _display_symbol(signal_data.get("symbol", "")),
                         signal_data.get("signal"), _fmt_price(signal_data.get("price", 0) or 0),
                     )
 
@@ -652,9 +720,18 @@ class TradingBot:
         _signal.signal(_signal.SIGINT, self._handle_signal)
         _signal.signal(_signal.SIGTERM, self._handle_signal)
 
+        mode = "REAL TRADING ⚠️" if self.real_mode else "Paper Trading"
+        extra = ""
+        if self.real_mode:
+            ok, msg = self.trader.safety_ready()
+            extra = f"<b>Safety:</b> {esc(msg)}\n"
+            if not ok:
+                self.trading_enabled = False
+                extra += "<b>Trading:</b> disabled until safety passes\n"
         self.telegram.send_message(
             "🚀 <b>Trading Bot Started</b>\n\n"
-            f"<b>Mode:</b> Paper Trading\n"
+            f"<b>Mode:</b> {mode}\n"
+            f"{extra}"
             f"<b>Symbols:</b> {esc(', '.join(SYMBOLS))}\n"
             f"<b>Scan Interval:</b> {self.scan_interval // 60} min\n"
             f"<b>Position Check:</b> every {self.position_check_interval}s\n\n"
